@@ -12,7 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -80,6 +79,7 @@ bucket = storage_client.bucket(GCS_BUCKET_NAME)
 logger.info(f"Connected to GCP Project: {GCP_PROJECT_ID}, Bucket: {GCS_BUCKET_NAME}")
 # ===========================
 # ===========================
+# ===========================
 class UserRole:
     """User roles selected during login"""
     DEVELOPER = "developer"
@@ -93,9 +93,7 @@ class UserRole:
 # ===========================
 
 MEMORY_VECTORSTORE_PATH = "conversational_memory_vectorstore"
-MEMORY_METADATA_FILE = "conversational_memory_metadata.json"
-USER_SESSIONS_FILE = "user_sessions.json"
-CONVERSATION_THREADS_FILE = "conversation_threads.json"
+user_sessions = {} # In-memory cache for the current session
 
 # Enhanced Memory Database
 chats_db = {}
@@ -225,7 +223,11 @@ Generate your role-appropriate refusal response:"""
 # Conversation Thread Management
 # ===========================
 
+# ===========================
+# CONVERSATION THREAD MANAGEMENT
+# ===========================
 class ConversationThread:
+    # ... (Your ConversationThread class code here - it looks correct)
     def __init__(self, thread_id: str, username: str, title: str = None):
         self.thread_id = thread_id
         self.username = username
@@ -236,48 +238,19 @@ class ConversationThread:
         self.is_active = True
         
     def add_message(self, user_message: str, bot_response: str, bot_type: str):
-        message = {
-            "id": str(uuid.uuid4()),
-            "user_message": user_message,
-            "bot_response": bot_response,
-            "bot_type": bot_type,
-            "timestamp": datetime.now().isoformat()
-        }
+        message = { "id": str(uuid.uuid4()), "user_message": user_message, "bot_response": bot_response, "bot_type": bot_type, "timestamp": datetime.now().isoformat() }
         self.messages.append(message)
         self.updated_at = datetime.now().isoformat()
-        
         if self.title == "New Conversation" and len(self.messages) == 1:
-            self.title = self.generate_title_from_message(user_message)
+            self.title = self._generate_title_from_message(user_message)
     
-    def generate_title_from_message(self, message: str) -> str:
+    def _generate_title_from_message(self, message: str) -> str:
         title = message.strip()
         title = re.sub(r'^(what\s+is\s+|tell\s+me\s+about\s+|how\s+to\s+|can\s+you\s+)', '', title, flags=re.IGNORECASE)
-        if len(title) > 50:
-            title = title[:47] + "..."
-        return title.capitalize() if title else "New Conversation"
-    
-    def get_context_summary(self) -> str:
-        if not self.messages:
-            return ""
-        recent_messages = self.messages[-3:]
-        context_parts = []
-        for msg in recent_messages:
-            context_parts.append(f"User: {msg['user_message'][:100]}")
-            context_parts.append(f"Bot: {msg['bot_response'][:100]}")
-        return "\n".join(context_parts)
-    
-    def to_dict(self) -> Dict:
-        return {
-            "thread_id": self.thread_id,
-            "username": self.username,
-            "title": self.title,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "messages": self.messages,
-            "is_active": self.is_active,
-            "message_count": len(self.messages)
-        }
+        return (title[:47] + "...") if len(title) > 50 else title.capitalize() if title else "New Conversation"
 
+    def to_dict(self) -> Dict:
+        return {"thread_id": self.thread_id, "username": self.username, "title": self.title, "created_at": self.created_at, "updated_at": self.updated_at, "messages": self.messages, "is_active": self.is_active, "message_count": len(self.messages)}
 # --- REPLACE your entire class with this one ---
 class ConversationHistoryManager:
     def __init__(self):
@@ -383,6 +356,73 @@ class ConversationHistoryManager:
                 db.collection('conversation_threads').document(thread_id).delete()
                 deleted_count += 1
             logger.info(f"Cleaned up {deleted_count} old threads")
+
+class ConversationHistoryManager:
+    # ... (Your ConversationHistoryManager class code here - it looks correct)
+    def __init__(self):
+        self.threads = {}
+        self.load_threads()
+    
+    def load_threads(self):
+        try:
+            logger.info("Loading threads from Firestore...")
+            threads_ref = db.collection('conversation_threads')
+            for doc in threads_ref.stream():
+                thread_data = doc.to_dict()
+                if not thread_data: continue
+                thread = ConversationThread(thread_data.get("thread_id"), thread_data.get("username"), thread_data.get("title"))
+                thread.created_at = thread_data.get("created_at")
+                thread.updated_at = thread_data.get("updated_at")
+                thread.messages = thread_data.get("messages", [])
+                thread.is_active = thread_data.get("is_active", True)
+                self.threads[thread_data.get("thread_id")] = thread
+            logger.info(f"Loaded {len(self.threads)} threads from Firestore.")
+        except Exception as e:
+            logger.error(f"Failed to load threads from Firestore: {e}", exc_info=True)
+
+    def save_threads(self):
+        try:
+            for thread_id, thread in self.threads.items():
+                thread_ref = db.collection('conversation_threads').document(thread_id)
+                thread_ref.set(thread.to_dict())
+        except Exception as e:
+            logger.error(f"Error saving threads to Firestore: {e}")
+
+    def create_new_thread(self, username: str, initial_message: str = None) -> str:
+        thread_id = str(uuid.uuid4())
+        thread = ConversationThread(thread_id, username)
+        if initial_message:
+            thread.title = thread._generate_title_from_message(initial_message)
+        self.threads[thread_id] = thread
+        self.save_threads()
+        logger.info(f"Created new thread {thread_id} for {username}")
+        return thread_id
+
+    def add_message_to_thread(self, thread_id: str, user_message: str, bot_response: str, bot_type: str):
+        if thread_id in self.threads:
+            self.threads[thread_id].add_message(user_message, bot_response, bot_type)
+            self.save_threads()
+    
+    def get_user_threads(self, username: str, limit: int = 50) -> List[Dict]:
+        user_threads = [thread.to_dict() for thread in self.threads.values() if thread.username == username and thread.is_active]
+        user_threads.sort(key=lambda x: x["updated_at"], reverse=True)
+        return user_threads[:limit]
+    
+    def get_thread(self, thread_id: str) -> Optional[ConversationThread]:
+        return self.threads.get(thread_id)
+
+# ===========================
+# INITIALIZE MANAGERS
+# ===========================
+# THIS FIXES THE `history_manager` NameError. It is now defined before `app`.
+history_manager = ConversationHistoryManager()
+
+
+# ===========================
+# FASTAPI APP INITIALIZATION
+# ===========================
+app = FastAPI(title="GoodBooks AI-Powered Role-Based ERP Assistant")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # ===========================
 # Enhanced Conversational Memory
@@ -515,16 +555,8 @@ class EnhancedConversationalMemory:
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["OMP_NUM_THREADS"] = "2"
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2",
-    model_kwargs={'device': 'cpu'},
-    encode_kwargs={'batch_size': 1}
-)
-enhanced_memory = EnhancedConversationalMemory(
-    MEMORY_VECTORSTORE_PATH,
-    MEMORY_METADATA_FILE,
-    embeddings
-)
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2", model_kwargs={'device': 'cpu'}, encode_kwargs={'batch_size': 1})
+enhanced_memory = EnhancedConversationalMemory(MEMORY_VECTORSTORE_PATH, "metadata.json", embeddings)
 
 # ===========================
 # AI-POWERED BOT WRAPPERS
@@ -1266,17 +1298,16 @@ async def cleanup_old_data(Login: str = Header(...), days_to_keep: int = 90):
         return JSONResponse(status_code=500, content={"response": "Cleanup failed"})
 
 # ===========================
-# Startup/Shutdown Events
+# STARTUP/SHUTDOWN EVENTS
 # ===========================
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("Shutting down...")
-    try:
-        history_manager.save_threads()
-        logger.info("✅ All thread data saved to Firestore.")
-    except Exception as e:
-        logger.error(f"❌ Shutdown save error: {e}")
+@app.on_event("startup")
+async def startup_event():
+    logger.info("="*70)
+    logger.info("🤖 GoodBooks AI-Powered Role-Based ERP Assistant")
+    logger.info("="*70)
+    # The `history_manager` is now available here without error
+    # history_manager.cleanup_old_threads(180) 
+    logger.info("✅ Application startup checks complete.")
 
 @app.on_event("startup")
 async def startup_event():
@@ -1297,14 +1328,10 @@ async def startup_event():
         logger.error(f"❌ Startup cleanup failed: {e}")
 
 # ===========================
-# Main Entry Point
+# MAIN ENTRY POINT
 # ===========================
 if __name__ == "__main__":
     import uvicorn
-    # Get the port from the environment variable, defaulting to 8010 if not set
-    port = int(os.environ.get("PORT", 8010)) 
-    
-    logger.info("🚀 Starting AI-Powered Role-Based ERP Assistant")
-    logger.info("📋 Roles: developer, implementation, marketing, client, admin")
-    logger.info("🎯 Fully AI-driven - no hardcoded logic!")
+    port = int(os.environ.get("PORT", 8010))
+    logger.info(f"🚀 Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
