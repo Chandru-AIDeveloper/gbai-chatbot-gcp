@@ -67,8 +67,8 @@ logger = logging.getLogger(__name__)
 # ===========================
 # GCP CLIENTS
 # ===========================
-GCP_PROJECT_ID = os.environ.get('ai-chatbot-test-473604')
-GCS_BUCKET_NAME = os.environ.get('gbai-vector-storage-473604')
+GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
+GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME')
 
 # Initialize Firestore DB
 db = firestore.Client(project=GCP_PROJECT_ID)
@@ -79,13 +79,7 @@ bucket = storage_client.bucket(GCS_BUCKET_NAME)
 
 logger.info(f"Connected to GCP Project: {GCP_PROJECT_ID}, Bucket: {GCS_BUCKET_NAME}")
 # ===========================
-# Initialize Cloud Storage client
-storage_client = storage.Client(project=GCP_PROJECT_ID)
-bucket = storage_client.bucket(GCS_BUCKET_NAME)
-
-logger.info(f"Connected to GCP Project: {GCP_PROJECT_ID}, Bucket: {GCS_BUCKET_NAME}")
 # ===========================
-
 class UserRole:
     """User roles selected during login"""
     DEVELOPER = "developer"
