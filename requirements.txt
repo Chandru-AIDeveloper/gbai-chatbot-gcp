@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 pydantic
+pandas
 langchain-core
 langchain-community
 langchain-huggingface

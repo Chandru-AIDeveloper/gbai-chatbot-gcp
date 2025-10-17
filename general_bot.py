@@ -16,7 +16,6 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
-from langchain_ollama import ChatOllama
 from langchain_core.documents import Document
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Header
