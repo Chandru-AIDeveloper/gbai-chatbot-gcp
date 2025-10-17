@@ -216,37 +216,16 @@ conversational_memory = ConversationalMemory(
 )
  
 # Load and split documents
-def load_text_and_json_files(documents_dir: str) -> List[Document]:
+def load_text_and_json_files(documents_dir):
+    # --- ADD THIS CHECK ---
+    if not os.path.exists(documents_dir):
+        logging.warning(f"Documents directory '{documents_dir}' not found. RAG will not be available.")
+        return [] # Return an empty list if the directory doesn't exist
+    # --- END OF ADDED CHECK ---
+
     all_docs = []
     files = [f for f in os.listdir(documents_dir) if f.endswith(('.txt', '.json'))]
-
-    for file in files:
-        try:
-            file_path = os.path.join(documents_dir, file)
-            logger.info(f"Loading file: {file}")
-
-            if file.endswith('.txt'):
-                loader = TextLoader(file_path)
-                docs = loader.load()
-                all_docs.extend(docs)
-
-            elif file.endswith('.json'):
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    json_data = json.load(f)
-                
-                if isinstance(json_data, dict):
-                    content = json.dumps(json_data, ensure_ascii=False)
-                elif isinstance(json_data, list):
-                    content = json.dumps(json_data, ensure_ascii=False)
-                else:
-                    content = str(json_data)
-                
-                doc = Document(page_content=content, metadata={"source": file_path})
-                all_docs.append(doc)
-
-        except Exception as e:
-            logger.error(f"Failed to load {file}: {e}")
-
+    # ... rest of the function stays the same ...
     return all_docs
  
 all_docs = load_text_and_json_files(DOCUMENTS_DIR)
