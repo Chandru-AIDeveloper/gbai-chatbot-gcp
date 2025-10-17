@@ -3,7 +3,7 @@ import os
 import logging
 import traceback
 import pandas as pd
-from langchain_ollama import ChatOllama
+# from langchain_ollama import ChatOllama
 from typing import List, Dict, Any
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -52,11 +52,11 @@ app.add_middleware(
 )
 
 # Get the Ollama URL from an environment variable, defaulting to localhost for local development
-llm = ChatOllama(
-    model="gemma:2b",
-    base_url="http://ollama:11434",
-    temperature=0.3
-)
+# llm = ChatOllama(
+#     model="gemma:2b",
+#     base_url="http://ollama:11434",
+#     temperature=0.3
+# )
 
 def load_csv_as_document(file_path: str) -> List[Document]:
     """Load CSV file and convert to documents"""
