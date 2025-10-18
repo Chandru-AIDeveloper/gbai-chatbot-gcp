@@ -226,11 +226,11 @@ else:
     logger.warning("No schema documents loaded. Schema chat not available.")
 
 # Initialize LLM
-llm = ChatOllama(
-    model="gemma:2b",
-    base_url="http://ollama:11434",
-    temperature=0.3
-)
+# llm = ChatOllama(
+#     model="gemma:2b",
+#     base_url="http://ollama:11434",
+#     temperature=0.3
+# )
 # ChatGPT-style conversational prompt
 prompt_template = """
 You are GoodBooks Database Schema Assistant, a friendly and conversational database schema expert.
@@ -272,7 +272,7 @@ if retriever:
             "question": lambda x: x["question"]
         }
         | prompt
-        | llm
+        # | llm
         | StrOutputParser()
     )
 

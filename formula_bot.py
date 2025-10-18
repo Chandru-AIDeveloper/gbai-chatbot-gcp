@@ -171,7 +171,7 @@ if retriever:
             context=lambda x: format_docs(retriever.invoke(x["question"]))
         )
         | prompt
-        | llm
+        # | llm
         | StrOutputParser()
     )
 

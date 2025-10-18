@@ -194,7 +194,7 @@ if retriever:
             "history": lambda x: x["history"]
         }
         | prompt
-        | llm
+        # | llm
         | StrOutputParser()
     )
  
