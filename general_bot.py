@@ -5,12 +5,12 @@ import traceback
 import re
 from typing import List, Dict
 from datetime import datetime
-# from langchain_ollama import ChatOllama
+from langchain_ollama import ChatOllama
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import JSONLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -55,11 +55,11 @@ app.add_middleware(
 # Initialize LLM
 # Get the Ollama URL from an environment variable, defaulting to localhost for local development
 
-# llm = ChatOllama(
-#     model="gemma:2b",
-#     base_url="http://ollama:11434",
-#     temperature=0.3
-# )
+llm = ChatOllama(
+    model="gemma:2b",
+    base_url="http://ollama:11434",
+    temperature=0.3
+)
  
 # Initialize embeddings (shared for both document and memory vectorstores)
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
