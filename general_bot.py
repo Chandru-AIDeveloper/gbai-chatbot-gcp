@@ -31,7 +31,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
  
 # Paths
-DOCUMENTS_DIR = "data"
+DOCUMENTS_DIR = "/app/data"
 MEMORY_VECTORSTORE_PATH = "memory_vectorstore"
 MEMORY_METADATA_FILE = "memory_metadata.json"
  
