@@ -8,6 +8,7 @@ langchain-huggingface
 sentence-transformers
 faiss-cpu
 langchain-ollama
+jq
 # --- GCP Libraries ---
 google-cloud-firestore
 google-cloud-storage
