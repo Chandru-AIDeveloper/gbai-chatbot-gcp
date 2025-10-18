@@ -77,9 +77,9 @@ storage_client = storage.Client(project=GCP_PROJECT_ID)
 bucket = storage_client.bucket(GCS_BUCKET_NAME)
 
 logger.info(f"Connected to GCP Project: {GCP_PROJECT_ID}, Bucket: {GCS_BUCKET_NAME}")
+
 # ===========================
-# ===========================
-# ===========================
+# USER ROLES
 # ===========================
 class UserRole:
     """User roles selected during login"""
@@ -92,20 +92,16 @@ class UserRole:
 # ===========================
 # Storage Paths
 # ===========================
-
 MEMORY_VECTORSTORE_PATH = "conversational_memory_vectorstore"
-user_sessions = {} # In-memory cache for the current session
 
 # Enhanced Memory Database
 chats_db = {}
 conversational_memory_metadata = {}
 user_sessions = {}
-conversation_threads = {}
 
 # ===========================
 # AI-POWERED ROLE-BASED SYSTEM PROMPTS
 # ===========================
-
 ROLE_SYSTEM_PROMPTS = {
     UserRole.DEVELOPER: """You are a senior software architect and technical expert at GoodBooks Technologies ERP system.
 
@@ -169,7 +165,6 @@ Remember: You are the complete expert providing full system knowledge."""
 # ===========================
 # AI ORCHESTRATOR SYSTEM PROMPT
 # ===========================
-
 ORCHESTRATOR_SYSTEM_PROMPT = """You are an intelligent routing system for GoodBooks Technologies ERP chatbot.
 
 Your ONLY job is to analyze the user's question and determine which specialized bot should handle it.
@@ -202,7 +197,6 @@ Bot Selection:"""
 # ===========================
 # AI OUT-OF-SCOPE REFUSAL PROMPT
 # ===========================
-
 OUT_OF_SCOPE_SYSTEM_PROMPT = """You are a GoodBooks Technologies ERP assistant with role: {role}.
 
 The user asked a question that is outside your knowledge scope. 
@@ -221,14 +215,9 @@ User Question: {question}
 Generate your role-appropriate refusal response:"""
 
 # ===========================
-# Conversation Thread Management
-# ===========================
-
-# ===========================
 # CONVERSATION THREAD MANAGEMENT
 # ===========================
 class ConversationThread:
-    # ... (Your ConversationThread class code here - it looks correct)
     def __init__(self, thread_id: str, username: str, title: str = None):
         self.thread_id = thread_id
         self.username = username
@@ -239,7 +228,13 @@ class ConversationThread:
         self.is_active = True
         
     def add_message(self, user_message: str, bot_response: str, bot_type: str):
-        message = { "id": str(uuid.uuid4()), "user_message": user_message, "bot_response": bot_response, "bot_type": bot_type, "timestamp": datetime.now().isoformat() }
+        message = {
+            "id": str(uuid.uuid4()),
+            "user_message": user_message,
+            "bot_response": bot_response,
+            "bot_type": bot_type,
+            "timestamp": datetime.now().isoformat()
+        }
         self.messages.append(message)
         self.updated_at = datetime.now().isoformat()
         if self.title == "New Conversation" and len(self.messages) == 1:
@@ -251,8 +246,18 @@ class ConversationThread:
         return (title[:47] + "...") if len(title) > 50 else title.capitalize() if title else "New Conversation"
 
     def to_dict(self) -> Dict:
-        return {"thread_id": self.thread_id, "username": self.username, "title": self.title, "created_at": self.created_at, "updated_at": self.updated_at, "messages": self.messages, "is_active": self.is_active, "message_count": len(self.messages)}
-# --- REPLACE your entire class with this one ---
+        return {
+            "thread_id": self.thread_id,
+            "username": self.username,
+            "title": self.title,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "messages": self.messages,
+            "is_active": self.is_active,
+            "message_count": len(self.messages)
+        }
+
+
 class ConversationHistoryManager:
     def __init__(self):
         self.threads = {}
@@ -264,114 +269,13 @@ class ConversationHistoryManager:
             threads_ref = db.collection('conversation_threads')
             for doc in threads_ref.stream():
                 thread_data = doc.to_dict()
+                if not thread_data: 
+                    continue
                 thread = ConversationThread(
-                    thread_data["thread_id"],
-                    thread_data["username"],
+                    thread_data.get("thread_id"), 
+                    thread_data.get("username"), 
                     thread_data.get("title")
                 )
-                thread.created_at = thread_data.get("created_at")
-                thread.updated_at = thread_data.get("updated_at")
-                thread.messages = thread_data.get("messages", [])
-                thread.is_active = thread_data.get("is_active", True)
-                self.threads[thread_data["thread_id"]] = thread
-            logger.info(f"Loaded {len(self.threads)} threads from Firestore.")
-        except Exception as e:
-            logger.error(f"Failed to load threads from Firestore: {e}")
-
-    def save_threads(self):
-        try:
-            logger.info("Saving updated threads to Firestore...")
-            for thread_id, thread in self.threads.items():
-                thread_ref = db.collection('conversation_threads').document(thread_id)
-                thread_ref.set(thread.to_dict())
-        except Exception as e:
-            logger.error(f"Error saving threads to Firestore: {e}")
-
-    def create_new_thread(self, username: str, initial_message: str = None) -> str:
-        thread_id = str(uuid.uuid4())
-        title = "New Conversation"
-        if initial_message:
-            title = self.generate_title_from_message(initial_message)
-        thread = ConversationThread(thread_id, username, title)
-        self.threads[thread_id] = thread
-        self.save_threads() # Save after creating
-        logger.info(f"Created new thread {thread_id} for {username}")
-        return thread_id
-    
-    def generate_title_from_message(self, message: str) -> str:
-        title = message.strip()
-        title = re.sub(r'^(what\s+is\s+|tell\s+me\s+about\s+|how\s+to\s+|can\s+you\s+)', '', title, flags=re.IGNORECASE)
-        if len(title) > 50:
-            title = title[:47] + "..."
-        return title.capitalize() if title else "New Conversation"
-    
-    def add_message_to_thread(self, thread_id: str, user_message: str, bot_response: str, bot_type: str):
-        if thread_id in self.threads:
-            self.threads[thread_id].add_message(user_message, bot_response, bot_type)
-            self.save_threads()
-    
-    def get_thread(self, thread_id: str) -> Optional[ConversationThread]:
-        return self.threads.get(thread_id)
-    
-    def get_user_threads(self, username: str, limit: int = 50) -> List[Dict]:
-        user_threads = [
-            thread.to_dict() for thread in self.threads.values()
-            if thread.username == username and thread.is_active
-        ]
-        user_threads.sort(key=lambda x: x["updated_at"], reverse=True)
-        return user_threads[:limit]
-    
-    def delete_thread(self, thread_id: str, username: str) -> bool:
-        if thread_id in self.threads and self.threads[thread_id].username == username:
-            self.threads[thread_id].is_active = False
-            self.save_threads()
-            return True
-        return False
-    
-    def rename_thread(self, thread_id: str, username: str, new_title: str) -> bool:
-        if thread_id in self.threads and self.threads[thread_id].username == username:
-            self.threads[thread_id].title = new_title
-            self.threads[thread_id].updated_at = datetime.now().isoformat()
-            self.save_threads()
-            return True
-        return False
-    
-    def get_thread_context(self, thread_id: str) -> str:
-        thread = self.threads.get(thread_id)
-        if thread:
-            return thread.get_context_summary()
-        return ""
-    
-    def cleanup_old_threads(self, days_to_keep: int = 90):
-        cutoff_date = datetime.now() - timedelta(days=days_to_keep)
-        cutoff_iso = cutoff_date.isoformat()
-        deleted_count = 0
-        threads_to_delete = []
-        for thread_id, thread in self.threads.items():
-            if not thread.is_active and thread.updated_at < cutoff_iso:
-                threads_to_delete.append(thread_id)
-        
-        if threads_to_delete:
-            for thread_id in threads_to_delete:
-                del self.threads[thread_id]
-                db.collection('conversation_threads').document(thread_id).delete()
-                deleted_count += 1
-            logger.info(f"Cleaned up {deleted_count} old threads")
-
-class ConversationHistoryManager:
-    # ... (Your ConversationHistoryManager class code here - it looks correct)
-    def __init__(self):
-        self.threads = {}
-        self.load_threads()
-    
-    def load_threads(self):
-        try:
-            logger.info("Loading threads from Firestore...")
-            threads_ref = db.collection('conversation_threads')
-            for doc in threads_ref.stream():
-                thread_data = doc.to_dict()
-                if not thread_data: continue
-                thread = ConversationThread(thread_data.get("thread_id"), thread_data.get("username"), thread_data.get("title"))
                 thread.created_at = thread_data.get("created_at")
                 thread.updated_at = thread_data.get("updated_at")
                 thread.messages = thread_data.get("messages", [])
@@ -405,30 +309,55 @@ class ConversationHistoryManager:
             self.save_threads()
     
     def get_user_threads(self, username: str, limit: int = 50) -> List[Dict]:
-        user_threads = [thread.to_dict() for thread in self.threads.values() if thread.username == username and thread.is_active]
+        user_threads = [
+            thread.to_dict() for thread in self.threads.values() 
+            if thread.username == username and thread.is_active
+        ]
         user_threads.sort(key=lambda x: x["updated_at"], reverse=True)
         return user_threads[:limit]
     
     def get_thread(self, thread_id: str) -> Optional[ConversationThread]:
         return self.threads.get(thread_id)
+    
+    def delete_thread(self, thread_id: str, username: str) -> bool:
+        if thread_id in self.threads and self.threads[thread_id].username == username:
+            self.threads[thread_id].is_active = False
+            self.save_threads()
+            return True
+        return False
+    
+    def rename_thread(self, thread_id: str, username: str, new_title: str) -> bool:
+        if thread_id in self.threads and self.threads[thread_id].username == username:
+            self.threads[thread_id].title = new_title
+            self.threads[thread_id].updated_at = datetime.now().isoformat()
+            self.save_threads()
+            return True
+        return False
+    
+    def cleanup_old_threads(self, days_to_keep: int = 90):
+        cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+        cutoff_iso = cutoff_date.isoformat()
+        deleted_count = 0
+        threads_to_delete = []
+        
+        for thread_id, thread in self.threads.items():
+            if not thread.is_active and thread.updated_at < cutoff_iso:
+                threads_to_delete.append(thread_id)
+        
+        if threads_to_delete:
+            for thread_id in threads_to_delete:
+                del self.threads[thread_id]
+                db.collection('conversation_threads').document(thread_id).delete()
+                deleted_count += 1
+            logger.info(f"Cleaned up {deleted_count} old threads")
 
-# ===========================
-# INITIALIZE MANAGERS
-# ===========================
-# THIS FIXES THE `history_manager` NameError. It is now defined before `app`.
+
+# Initialize history manager
 history_manager = ConversationHistoryManager()
-
-
-# ===========================
-# FASTAPI APP INITIALIZATION
-# ===========================
-app = FastAPI(title="GoodBooks AI-Powered Role-Based ERP Assistant")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # ===========================
 # Enhanced Conversational Memory
 # ===========================
-
 class EnhancedConversationalMemory:
     def __init__(self, vectorstore_path: str, metadata_file: str, embeddings):
         self.vectorstore_path = vectorstore_path
@@ -438,7 +367,6 @@ class EnhancedConversationalMemory:
         self.memory_counter = 0
         self.load_memory_vectorstore()
     
-    # Find this method and replace its content
     def load_memory_vectorstore(self):
         try:
             # Download from GCS
@@ -447,7 +375,7 @@ class EnhancedConversationalMemory:
 
             if faiss_index_blob.exists() and pkl_index_blob.exists():
                 logger.info("Downloading FAISS index from Cloud Storage...")
-                os.makedirs(self.vectorstore_path, exist_ok=True) # Create a temporary local dir
+                os.makedirs(self.vectorstore_path, exist_ok=True)
                 faiss_index_blob.download_to_filename(f"{self.vectorstore_path}.faiss")
                 pkl_index_blob.download_to_filename(f"{self.vectorstore_path}.pkl")
 
@@ -501,7 +429,7 @@ class EnhancedConversationalMemory:
             self.memory_counter += 1
             if self.memory_counter % 5 == 0:
                 logger.info("Saving FAISS index to Cloud Storage...")
-                self.memory_vectorstore.save_local(self.vectorstore_path) # Save to temp local dir first
+                self.memory_vectorstore.save_local(self.vectorstore_path)
 
                 # Upload to GCS
                 faiss_blob = bucket.blob(f"{self.vectorstore_path}.faiss")
@@ -514,11 +442,9 @@ class EnhancedConversationalMemory:
     
     def retrieve_contextual_memories(self, username: str, query: str, k: int = 3, thread_id: str = None, thread_isolation: bool = False) -> List[Dict]:
         try:
-            # ...
             docs = self.memory_vectorstore.similarity_search(query, k=k * 3)
 
             user_memories = {}
-            # --- FIX: CHANGE 'all_relevant_docs' to 'docs' ---
             for doc in docs:
                 if (doc.metadata.get("username") == username and
                     doc.metadata.get("memory_id") != "init"):
@@ -552,17 +478,21 @@ class EnhancedConversationalMemory:
             logger.error(f"Error retrieving memories: {e}")
             return []
 
+
 # Initialize memory system
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["OMP_NUM_THREADS"] = "2"
 
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2", model_kwargs={'device': 'cpu'}, encode_kwargs={'batch_size': 1})
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2", 
+    model_kwargs={'device': 'cpu'}, 
+    encode_kwargs={'batch_size': 1}
+)
 enhanced_memory = EnhancedConversationalMemory(MEMORY_VECTORSTORE_PATH, "metadata.json", embeddings)
 
 # ===========================
 # AI-POWERED BOT WRAPPERS
 # ===========================
-
 class GeneralBotWrapper:
     @staticmethod
     async def answer(question: str, context: str, user_role: str) -> str:
@@ -590,6 +520,7 @@ class GeneralBotWrapper:
         except Exception as e:
             logger.error(f"General bot error: {e}")
             return None
+
 
 class FormulaBot:
     @staticmethod
@@ -619,6 +550,7 @@ class FormulaBot:
             logger.error(f"Formula bot error: {e}")
             return None
 
+
 class ReportBot:
     @staticmethod
     async def answer(question: str, context: str, user_role: str) -> str:
@@ -646,6 +578,7 @@ class ReportBot:
         except Exception as e:
             logger.error(f"Report bot error: {e}")
             return None
+
 
 class MenuBot:
     @staticmethod
@@ -675,6 +608,7 @@ class MenuBot:
             logger.error(f"Menu bot error: {e}")
             return None
 
+
 class ProjectBot:
     @staticmethod
     async def answer(question: str, context: str, user_role: str) -> str:
@@ -703,13 +637,13 @@ class ProjectBot:
             logger.error(f"Project bot error: {e}")
             return None
 
+
 # ===========================
 # AI-POWERED ORCHESTRATION AGENT
 # ===========================
-
 class AIOrchestrationAgent:
     def __init__(self):
-        self.llm = VertexAI(model_name="gemma-2b", temperature=0.1)
+        self.llm = VertexAI(model_name="gemini-1.5-flash", temperature=0.1)
         
         self.bots = {
             "general": GeneralBotWrapper(),
@@ -728,7 +662,7 @@ class AIOrchestrationAgent:
             )
             
             response = await self.llm.ainvoke(prompt)
-            intent = response.content.strip().lower()
+            intent = response.strip().lower()
             
             # Validate the response
             valid_intents = ["general", "formula", "report", "menu", "project"]
@@ -755,11 +689,10 @@ class AIOrchestrationAgent:
             )
             
             response = await self.llm.ainvoke(prompt)
-            return response.content.strip()
+            return response.strip()
             
         except Exception as e:
             logger.error(f"Out-of-scope response generation error: {e}")
-            # Fallback
             return f"I'm your GoodBooks ERP assistant. I can help you with information about our ERP system, but I don't have information about that topic. What would you like to know about GoodBooks?"
     
     async def apply_role_perspective(self, answer: str, user_role: str, question: str) -> str:
@@ -776,9 +709,8 @@ Your task: Rewrite this answer to match your role's personality and communicatio
 Role-adapted answer:"""
             
             response = await self.llm.ainvoke(role_prompt)
-            role_adapted = response.content.strip()
+            role_adapted = response.strip()
             
-            # If AI fails or returns nothing, return original
             if role_adapted and len(role_adapted) > 20:
                 return role_adapted
             else:
@@ -844,18 +776,16 @@ Role-adapted answer:"""
             "user_role": user_role
         }
 
+
 # Initialize AI orchestrator
 ai_orchestrator = AIOrchestrationAgent()
 
 # ===========================
 # Helper Functions
 # ===========================
-
-# --- REPLACE the old update_user_session function with this one ---
 def update_user_session(username: str):
     current_time = datetime.now().isoformat()
     
-    # Use Firestore document as the source of truth
     session_ref = db.collection('user_sessions').document(username)
     session_doc = session_ref.get()
 
@@ -871,13 +801,12 @@ def update_user_session(username: str):
         user_session_data["last_activity"] = current_time
         user_session_data["total_interactions"] = user_session_data.get("total_interactions", 0) + 1
     
-    # Save back to Firestore
     try:
         session_ref.set(user_session_data)
-        # Also update the in-memory dict for the current session
         user_sessions[username] = user_session_data
     except Exception as e:
         logger.error(f"Error saving user session to Firestore: {e}")
+
 
 def build_conversational_context(username: str, current_query: str, thread_id: str = None, thread_isolation: bool = False) -> str:
     context_parts = []
@@ -909,7 +838,7 @@ def build_conversational_context(username: str, current_query: str, thread_id: s
     
     return "\n".join(context_parts)
 
-# --- REPLACE the old update_enhanced_memory function with this one ---
+
 def update_enhanced_memory(username: str, question: str, answer: str, bot_type: str, user_role: str, thread_id: str = None):
     update_user_session(username)
     
@@ -921,10 +850,10 @@ def update_enhanced_memory(username: str, question: str, answer: str, bot_type: 
     except Exception as e:
         logger.error(f"Error storing memory: {e}")
 
-# ===========================
-# FastAPI Application
-# ===========================
 
+# ===========================
+# FASTAPI APP INITIALIZATION
+# ===========================
 app = FastAPI(title="GoodBooks AI-Powered Role-Based ERP Assistant")
 
 app.add_middleware(
@@ -938,22 +867,23 @@ app.add_middleware(
 # ===========================
 # Pydantic Models
 # ===========================
-
 class Message(BaseModel):
     content: str
+
 
 class ThreadRequest(BaseModel):
     thread_id: Optional[str] = None
     message: str
 
+
 class ThreadRenameRequest(BaseModel):
     thread_id: str
     new_title: str
 
-# ===========================
-# API Endpoints
-# ===========================
 
+# ===========================
+# API ENDPOINTS
+# ===========================
 @app.post("/gbaiapi/chat", tags=["AI Role-Based Chat"])
 async def ai_role_based_chat(message: Message, Login: str = Header(...)):
     """
@@ -963,7 +893,7 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
-        user_role = login_dto.get("Role", "client").lower()  # Get role from login
+        user_role = login_dto.get("Role", "client").lower()
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header. Must include UserName and Role"})
     
@@ -993,6 +923,7 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
             status_code=500,
             content={"response": error_response, "bot_type": "error"}
         )
+
 
 @app.post("/gbaiapi/thread_chat", tags=["AI Thread Chat"])
 async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
@@ -1039,6 +970,7 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
             content={"response": error_response, "bot_type": "error", "thread_id": thread_id}
         )
 
+
 @app.get("/gbaiapi/conversation_threads", tags=["Conversation History"])
 async def get_conversation_threads(Login: str = Header(...), limit: int = 50):
     """Get user's conversation threads"""
@@ -1060,6 +992,7 @@ async def get_conversation_threads(Login: str = Header(...), limit: int = 50):
         "total_threads": len(threads)
     }
 
+
 @app.get("/gbaiapi/thread/{thread_id}", tags=["Conversation History"])
 async def get_thread_details(thread_id: str, Login: str = Header(...)):
     """Get thread details"""
@@ -1075,6 +1008,7 @@ async def get_thread_details(thread_id: str, Login: str = Header(...)):
         return JSONResponse(status_code=404, content={"response": "Thread not found"})
     
     return thread.to_dict()
+
 
 @app.delete("/gbaiapi/thread/{thread_id}", tags=["Conversation History"])
 async def delete_thread(thread_id: str, Login: str = Header(...)):
@@ -1092,6 +1026,7 @@ async def delete_thread(thread_id: str, Login: str = Header(...)):
     else:
         return JSONResponse(status_code=404, content={"response": "Thread not found"})
 
+
 @app.put("/gbaiapi/thread/{thread_id}/rename", tags=["Conversation History"])
 async def rename_thread(thread_id: str, request: ThreadRenameRequest, Login: str = Header(...)):
     """Rename a thread"""
@@ -1107,6 +1042,7 @@ async def rename_thread(thread_id: str, request: ThreadRenameRequest, Login: str
         return {"message": "Thread renamed successfully"}
     else:
         return JSONResponse(status_code=404, content={"response": "Thread not found"})
+
 
 @app.get("/gbaiapi/available_roles", tags=["Role Information"])
 async def get_available_roles():
@@ -1148,6 +1084,7 @@ async def get_available_roles():
         "note": "Role must be selected during login and passed in the Login header as 'Role' field"
     }
 
+
 @app.get("/gbaiapi/system_status", tags=["System Health"])
 async def system_status():
     """System health check"""
@@ -1182,7 +1119,7 @@ async def system_status():
             "🔧 Implementation: Step-by-step client guidance",
             "📢 Marketing: Business value and ROI focus",
             "👥 Client: Simple, friendly explanations",
-            "🔐 Admin: Comprehensive system knowledge",
+            "🔑 Admin: Comprehensive system knowledge",
             "💬 ChatGPT-like conversation threads",
             "🧠 Context-aware memory system",
             "🔗 Thread isolation for focused conversations",
@@ -1190,11 +1127,12 @@ async def system_status():
         ],
         "orchestration": {
             "type": "AI-powered",
-            "llm": "llama3",
+            "llm": "gemini-1.5-flash",
             "hardcoded_rules": "None - fully AI-driven",
             "out_of_scope_handling": "AI-generated role-appropriate refusals"
         }
     }
+
 
 @app.get("/gbaiapi/user_statistics", tags=["Analytics"])
 async def get_user_statistics(Login: str = Header(...)):
@@ -1245,6 +1183,7 @@ async def get_user_statistics(Login: str = Header(...)):
         }
     }
 
+
 @app.get("/gbaiapi/role_examples", tags=["Role Information"])
 async def get_role_examples():
     """Get examples of how different roles receive responses"""
@@ -1275,6 +1214,7 @@ async def get_role_examples():
         }
     }
 
+
 @app.post("/gbaiapi/cleanup_old_data", tags=["System Maintenance"])
 async def cleanup_old_data(Login: str = Header(...), days_to_keep: int = 90):
     """Cleanup old data (admin only)"""
@@ -1298,19 +1238,11 @@ async def cleanup_old_data(Login: str = Header(...), days_to_keep: int = 90):
         logger.error(f"Cleanup error: {e}")
         return JSONResponse(status_code=500, content={"response": "Cleanup failed"})
 
+
 # ===========================
 # STARTUP/SHUTDOWN EVENTS
 # ===========================
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("Shutting down...")
-    try:
-        history_manager.save_threads()
-        logger.info("✅ All thread data saved to Firestore.")
-    except Exception as e:
-        logger.error(f"❌ Shutdown save error: {e}")
-
-@app.on_event("startup")  # Keep this one
+@app.on_event("startup")
 async def startup_event():
     logger.info("="*70)
     logger.info("🤖 GoodBooks AI-Powered Role-Based ERP Assistant")
@@ -1323,13 +1255,22 @@ async def startup_event():
     logger.info("="*70)
 
     try:
-        # Make sure history_manager is defined before this point
-        history_manager.cleanup_old_threads(180) 
+        history_manager.cleanup_old_threads(180)
         logger.info("✅ Startup cleanup completed")
     except Exception as e:
         logger.error(f"❌ Startup cleanup failed: {e}")
 
-# DELETE THE SECOND @app.on_event("startup") FUNCTION HERE
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Shutting down...")
+    try:
+        history_manager.save_threads()
+        logger.info("✅ All thread data saved to Firestore.")
+    except Exception as e:
+        logger.error(f"❌ Shutdown save error: {e}")
+
+
 # ===========================
 # MAIN ENTRY POINT
 # ===========================
