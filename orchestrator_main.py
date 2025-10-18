@@ -499,29 +499,34 @@ class GeneralBotWrapper:
     async def answer(question: str, context: str, user_role: str) -> str:
         if not GENERAL_BOT_AVAILABLE:
             return None
-        
+
         try:
             class MockMessage:
                 def __init__(self, content):
                     self.content = content
-            
+
             message = MockMessage(question)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
-            
+
             if hasattr(general_bot, 'chat'):
                 result = await general_bot.chat(message, Login=login_header)
             else:
                 return None
-            
-            if isinstance(result, dict):
+
+            # --- THIS IS THE FIX ---
+            if isinstance(result, JSONResponse):
+                # If it's a JSONResponse, get the content from its body
+                body = json.loads(result.body.decode())
+                return body.get("response")
+            elif isinstance(result, dict):
                 return result.get("response", None)
             else:
                 return str(result) if result else None
-                
+            # --- END OF FIX ---
+
         except Exception as e:
             logger.error(f"General bot error: {e}")
             return None
-
 
 class FormulaBot:
     @staticmethod
@@ -557,25 +562,31 @@ class ReportBot:
     async def answer(question: str, context: str, user_role: str) -> str:
         if not REPORT_BOT_AVAILABLE:
             return None
-        
+
         try:
             class MockMessage:
                 def __init__(self, content):
                     self.content = content
-            
+
             message = MockMessage(question)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
-            
-            if hasattr(report_bot, 'report_chat'):
+
+            # Make sure to use the correct function name (e.g., report_chat)
+            if hasattr(report_bot, 'report_chat'): 
                 result = await report_bot.report_chat(message, Login=login_header)
             else:
                 return None
-            
-            if isinstance(result, dict):
+
+            # --- APPLY THE SAME FIX ---
+            if isinstance(result, JSONResponse):
+                body = json.loads(result.body.decode())
+                return body.get("response")
+            elif isinstance(result, dict):
                 return result.get("response", None)
             else:
                 return str(result) if result else None
-                
+            # --- END OF FIX ---
+
         except Exception as e:
             logger.error(f"Report bot error: {e}")
             return None
