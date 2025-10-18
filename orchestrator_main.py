@@ -10,12 +10,13 @@ from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from langchain_ollama import ChatOllama
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_google_vertexai import VertexAI
+# from langchain_google_vertexai import VertexAI
 from google.cloud import firestore
 from google.cloud import storage
 
@@ -643,7 +644,8 @@ class ProjectBot:
 # ===========================
 class AIOrchestrationAgent:
     def __init__(self):
-        self.llm = VertexAI(model_name="gemini-1.5-flash", temperature=0.1)
+        # This tells the app to connect to the Ollama service running on the VM
+        self.llm = ChatOllama(model="gemma:2b", base_url="http://localhost:11434")
         
         self.bots = {
             "general": GeneralBotWrapper(),
