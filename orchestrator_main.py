@@ -80,6 +80,7 @@ logger.info(f"Connected to GCP Project: {GCP_PROJECT_ID}, Bucket: {GCS_BUCKET_NA
 # ===========================
 # ===========================
 # ===========================
+# ===========================
 class UserRole:
     """User roles selected during login"""
     DEVELOPER = "developer"
@@ -1300,16 +1301,16 @@ async def cleanup_old_data(Login: str = Header(...), days_to_keep: int = 90):
 # ===========================
 # STARTUP/SHUTDOWN EVENTS
 # ===========================
-@app.on_event("startup")
-async def startup_event():
-    logger.info("="*70)
-    logger.info("🤖 GoodBooks AI-Powered Role-Based ERP Assistant")
-    logger.info("="*70)
-    # The `history_manager` is now available here without error
-    # history_manager.cleanup_old_threads(180) 
-    logger.info("✅ Application startup checks complete.")
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Shutting down...")
+    try:
+        history_manager.save_threads()
+        logger.info("✅ All thread data saved to Firestore.")
+    except Exception as e:
+        logger.error(f"❌ Shutdown save error: {e}")
 
-@app.on_event("startup")
+@app.on_event("startup")  # Keep this one
 async def startup_event():
     logger.info("="*70)
     logger.info("🤖 GoodBooks AI-Powered Role-Based ERP Assistant")
@@ -1320,13 +1321,15 @@ async def startup_event():
     logger.info("  • Out-of-scope question handling")
     logger.info("  • User selects role at login")
     logger.info("="*70)
-    
+
     try:
-        history_manager.cleanup_old_threads(180)
+        # Make sure history_manager is defined before this point
+        history_manager.cleanup_old_threads(180) 
         logger.info("✅ Startup cleanup completed")
     except Exception as e:
         logger.error(f"❌ Startup cleanup failed: {e}")
 
+# DELETE THE SECOND @app.on_event("startup") FUNCTION HERE
 # ===========================
 # MAIN ENTRY POINT
 # ===========================
