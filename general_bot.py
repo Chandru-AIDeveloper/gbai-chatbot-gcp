@@ -34,9 +34,7 @@ logger = logging.getLogger(__name__)
 DOCUMENTS_DIR = "/app/data"
 MEMORY_VECTORSTORE_PATH = "memory_vectorstore"
 MEMORY_METADATA_FILE = "memory_metadata.json"
- 
-# Load chat history
- 
+
 # Load memory metadata
 memory_metadata = {}
 if os.path.exists(MEMORY_METADATA_FILE):
@@ -217,17 +215,30 @@ conversational_memory = ConversationalMemory(
  
 # Load and split documents
 def load_text_and_json_files(documents_dir):
-    # --- ADD THIS CHECK ---
+    # --- THIS CHECK PREVENTS THE CRASH ---
     if not os.path.exists(documents_dir):
         logging.warning(f"Documents directory '{documents_dir}' not found. RAG will not be available.")
         return [] # Return an empty list if the directory doesn't exist
-    # --- END OF ADDED CHECK ---
+    # --- END OF FIX ---
 
     all_docs = []
-    files = [f for f in os.listdir(documents_dir) if f.endswith(('.txt', '.json'))]
-    # ... rest of the function stays the same ...
+    try:
+        files = [f for f in os.listdir(documents_dir) if f.endswith(('.txt', '.json'))]
+        for file_name in files:
+            file_path = os.path.join(documents_dir, file_name)
+            try:
+                if file_name.endswith('.txt'):
+                    loader = TextLoader(file_path, encoding='utf-8')
+                    all_docs.extend(loader.load())
+                elif file_name.endswith('.json'):
+                    loader = JSONLoader(file_path, jq_schema='.', text_content=False)
+                    all_docs.extend(loader.load())
+            except Exception as e:
+                logging.error(f"Error loading file {file_path}: {e}")
+    except Exception as e:
+        logging.error(f"Error reading documents directory {documents_dir}: {e}")
+
     return all_docs
- 
 all_docs = load_text_and_json_files(DOCUMENTS_DIR)
 text_chunks = None
 retriever = None
