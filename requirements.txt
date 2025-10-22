@@ -6,7 +6,7 @@ langchain-core
 langchain-community
 langchain-huggingface
 sentence-transformers
-faiss-gpu
+faiss-cpu
 langchain-ollama
 jq
 # --- GCP Libraries ---
