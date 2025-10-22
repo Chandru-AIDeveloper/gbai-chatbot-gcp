@@ -50,7 +50,7 @@ app.add_middleware(
 # Get the Ollama URL from an environment variable, defaulting to localhost for local development
 llm = ChatOllama(
     model="gemma:2b",
-    base_url="http://ollama:11434",
+    base_url="http://localhost:11434",
     temperature=0.3
 )
 

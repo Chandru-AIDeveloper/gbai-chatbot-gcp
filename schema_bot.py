@@ -228,7 +228,7 @@ else:
 # Initialize LLM
 llm = ChatOllama(
     model="gemma:2b",
-    base_url="http://ollama:11434",
+    base_url="http://localhost:11434",
     temperature=0.3
 )
 # ChatGPT-style conversational prompt
