@@ -245,7 +245,7 @@ Remember: You are the complete expert providing full system knowledge."""
 # AI ORCHESTRATOR SYSTEM PROMPT (SIMPLIFIED)
 # ===========================
 ORCHESTRATOR_SYSTEM_PROMPT = """Route this query to ONE bot:
-- general: company info, policies, employees, modules
+- general: company info, policies, employees, modules, products details, contact info.
 - formula: calculations, math expressions
 - report: data analysis, charts, reports
 - menu: navigation, interface help
