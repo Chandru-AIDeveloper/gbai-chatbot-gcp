@@ -13,14 +13,11 @@ from pydantic import BaseModel
 from langchain_ollama import ChatOllama
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
-from langchain_core.output_parsers import StrOutputParser
-# from langchain_google_vertexai import VertexAI
 from google.cloud import firestore
 from google.cloud import storage
 
-# Import your existing bot modules
+# Import bot modules
 try:
     import formula_bot
     FORMULA_BOT_AVAILABLE = True
@@ -64,44 +61,105 @@ except ImportError as e:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===========================
-# GCP CLIENTS
-# ===========================
+# GCP Configuration
 GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
 GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME')
-
-# Initialize Firestore DB
 db = firestore.Client(project=GCP_PROJECT_ID)
-
-# Initialize Cloud Storage client
 storage_client = storage.Client(project=GCP_PROJECT_ID)
 bucket = storage_client.bucket(GCS_BUCKET_NAME)
 
 logger.info(f"Connected to GCP Project: {GCP_PROJECT_ID}, Bucket: {GCS_BUCKET_NAME}")
 
-# ===========================
-# USER ROLES
-# ===========================
 class UserRole:
-    """User roles selected during login"""
     DEVELOPER = "developer"
     IMPLEMENTATION = "implementation"
     MARKETING = "marketing"
     CLIENT = "client"
     ADMIN = "admin"
 
-# ===========================
-# Storage Paths
-# ===========================
+# Memory storage
 MEMORY_VECTORSTORE_PATH = "conversational_memory_vectorstore"
-
-# Enhanced Memory Database
 chats_db = {}
 conversational_memory_metadata = {}
 user_sessions = {}
 
 # ===========================
-# AI-POWERED ROLE-BASED SYSTEM PROMPTS
+# HARDCODED GREETINGS (INSTANT RESPONSE)
+# ===========================
+GREETING_PATTERNS = [
+    r'^(hi|hello|hey|greetings|good morning|good afternoon|good evening|sup|yo|howdy)$',
+    r'^(hi|hello|hey)\s+(there|everyone|all)$',
+    r'^how are you\??$',
+    r'^what\'?s up\??$'
+]
+
+ROLE_GREETINGS = {
+    UserRole.DEVELOPER: """Hi! I'm your GoodBooks ERP technical assistant.
+
+I can help with:
+• System architecture & APIs
+• Database schemas & queries
+• Code examples & implementation
+• Technical troubleshooting
+
+What technical challenge can I solve?""",
+
+    UserRole.IMPLEMENTATION: """Hello! I'm your GoodBooks implementation consultant.
+
+I assist with:
+• Setup & configuration steps
+• Client deployment procedures
+• Best practices & troubleshooting
+
+How can I help with implementation?""",
+
+    UserRole.MARKETING: """Hi! I'm your GoodBooks product expert.
+
+I help with:
+• Business value & ROI metrics
+• Competitive advantages
+• Sales materials & success stories
+
+What would you like to explore?""",
+
+    UserRole.CLIENT: """Hello! Welcome to GoodBooks ERP! 😊
+
+I'm here to help you with:
+• Understanding features
+• Step-by-step guidance
+• Finding what you need
+
+What would you like to learn?""",
+
+    UserRole.ADMIN: """Hello! I'm your GoodBooks system administrator assistant.
+
+I help with:
+• System administration
+• Configuration management
+• User permissions & monitoring
+
+What can I assist you with?"""
+}
+
+def is_greeting(text: str) -> bool:
+    """Fast greeting detection - only for very simple greetings"""
+    text_lower = text.lower().strip()
+    
+    # Only match very simple, short greetings
+    if len(text_lower.split()) > 4:
+        return False
+    
+    for pattern in GREETING_PATTERNS:
+        if re.search(pattern, text_lower):
+            return True
+    return False
+
+def get_greeting_response(user_role: str) -> str:
+    """Get instant greeting response"""
+    return ROLE_GREETINGS.get(user_role, ROLE_GREETINGS[UserRole.CLIENT])
+
+# ===========================
+# ROLE-BASED SYSTEM PROMPTS
 # ===========================
 ROLE_SYSTEM_PROMPTS = {
     UserRole.DEVELOPER: """You are a senior software architect and technical expert at GoodBooks Technologies ERP system.
@@ -216,7 +274,7 @@ User Question: {question}
 Generate your role-appropriate refusal response:"""
 
 # ===========================
-# CONVERSATION THREAD MANAGEMENT
+# CONVERSATION THREADS
 # ===========================
 class ConversationThread:
     def __init__(self, thread_id: str, username: str, title: str = None):
@@ -257,7 +315,6 @@ class ConversationThread:
             "is_active": self.is_active,
             "message_count": len(self.messages)
         }
-
 
 class ConversationHistoryManager:
     def __init__(self):
@@ -352,12 +409,10 @@ class ConversationHistoryManager:
                 deleted_count += 1
             logger.info(f"Cleaned up {deleted_count} old threads")
 
-
-# Initialize history manager
 history_manager = ConversationHistoryManager()
 
 # ===========================
-# Enhanced Conversational Memory
+# MEMORY SYSTEM
 # ===========================
 class EnhancedConversationalMemory:
     def __init__(self, vectorstore_path: str, metadata_file: str, embeddings):
@@ -370,7 +425,6 @@ class EnhancedConversationalMemory:
     
     def load_memory_vectorstore(self):
         try:
-            # Download from GCS
             faiss_index_blob = bucket.blob(f"{self.vectorstore_path}.faiss")
             pkl_index_blob = bucket.blob(f"{self.vectorstore_path}.pkl")
 
@@ -428,11 +482,10 @@ class EnhancedConversationalMemory:
             }
             
             self.memory_counter += 1
-            if self.memory_counter % 5 == 0:
+            if self.memory_counter % 10 == 0:
                 logger.info("Saving FAISS index to Cloud Storage...")
                 self.memory_vectorstore.save_local(self.vectorstore_path)
 
-                # Upload to GCS
                 faiss_blob = bucket.blob(f"{self.vectorstore_path}.faiss")
                 pkl_blob = bucket.blob(f"{self.vectorstore_path}.pkl")
                 faiss_blob.upload_from_filename(f"{self.vectorstore_path}.faiss")
@@ -479,8 +532,6 @@ class EnhancedConversationalMemory:
             logger.error(f"Error retrieving memories: {e}")
             return []
 
-
-# Initialize memory system
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["OMP_NUM_THREADS"] = "2"
 
@@ -492,38 +543,27 @@ embeddings = HuggingFaceEmbeddings(
 enhanced_memory = EnhancedConversationalMemory(MEMORY_VECTORSTORE_PATH, "metadata.json", embeddings)
 
 # ===========================
-# AI-POWERED BOT WRAPPERS
+# BOT WRAPPERS (FIXED)
 # ===========================
 class GeneralBotWrapper:
     @staticmethod
     async def answer(question: str, context: str, user_role: str) -> str:
         if not GENERAL_BOT_AVAILABLE:
             return None
-
         try:
             class MockMessage:
                 def __init__(self, content):
                     self.content = content
-
             message = MockMessage(question)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
-
-            if hasattr(general_bot, 'chat'):
-                result = await general_bot.chat(message, Login=login_header)
-            else:
-                return None
-
-            # --- THIS IS THE FIX ---
+            result = await general_bot.chat(message, Login=login_header)
+            
             if isinstance(result, JSONResponse):
-                # If it's a JSONResponse, get the content from its body
                 body = json.loads(result.body.decode())
                 return body.get("response")
             elif isinstance(result, dict):
-                return result.get("response", None)
-            else:
-                return str(result) if result else None
-            # --- END OF FIX ---
-
+                return result.get("response")
+            return str(result) if result else None
         except Exception as e:
             logger.error(f"General bot error: {e}")
             return None
@@ -533,130 +573,99 @@ class FormulaBot:
     async def answer(question: str, context: str, user_role: str) -> str:
         if not FORMULA_BOT_AVAILABLE:
             return None
-        
         try:
             class MockMessage:
                 def __init__(self, content):
                     self.content = content
-            
             message = MockMessage(question)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            result = await formula_bot.chat(message, Login=login_header)
             
-            if hasattr(formula_bot, 'chat'):
-                result = await formula_bot.chat(message, Login=login_header)
-            else:
-                return None
-            
-            if isinstance(result, dict):
-                return result.get("response", None)
-            else:
-                return str(result) if result else None
-                
+            if isinstance(result, JSONResponse):
+                body = json.loads(result.body.decode())
+                return body.get("response")
+            elif isinstance(result, dict):
+                return result.get("response")
+            return str(result) if result else None
         except Exception as e:
             logger.error(f"Formula bot error: {e}")
             return None
-
 
 class ReportBot:
     @staticmethod
     async def answer(question: str, context: str, user_role: str) -> str:
         if not REPORT_BOT_AVAILABLE:
             return None
-
         try:
             class MockMessage:
                 def __init__(self, content):
                     self.content = content
-
             message = MockMessage(question)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
-
-            # Make sure to use the correct function name (e.g., report_chat)
-            if hasattr(report_bot, 'report_chat'): 
-                result = await report_bot.report_chat(message, Login=login_header)
-            else:
-                return None
-
-            # --- APPLY THE SAME FIX ---
+            result = await report_bot.report_chat(message, Login=login_header)
+            
             if isinstance(result, JSONResponse):
                 body = json.loads(result.body.decode())
                 return body.get("response")
             elif isinstance(result, dict):
-                return result.get("response", None)
-            else:
-                return str(result) if result else None
-            # --- END OF FIX ---
-
+                return result.get("response")
+            return str(result) if result else None
         except Exception as e:
             logger.error(f"Report bot error: {e}")
             return None
-
 
 class MenuBot:
     @staticmethod
     async def answer(question: str, context: str, user_role: str) -> str:
         if not MENU_BOT_AVAILABLE:
             return None
-        
         try:
             class MockMessage:
                 def __init__(self, content):
                     self.content = content
-            
             message = MockMessage(question)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            result = await menu_bot.chat(message, Login=login_header)
             
-            if hasattr(menu_bot, 'chat'):
-                result = await menu_bot.chat(message, Login=login_header)
-            else:
-                return None
-            
-            if isinstance(result, dict):
-                return result.get("response", None)
-            else:
-                return str(result) if result else None
-                
+            if isinstance(result, JSONResponse):
+                body = json.loads(result.body.decode())
+                return body.get("response")
+            elif isinstance(result, dict):
+                return result.get("response")
+            return str(result) if result else None
         except Exception as e:
             logger.error(f"Menu bot error: {e}")
             return None
-
 
 class ProjectBot:
     @staticmethod
     async def answer(question: str, context: str, user_role: str) -> str:
         if not PROJECT_BOT_AVAILABLE:
             return None
-        
         try:
             class MockMessage:
                 def __init__(self, content):
                     self.content = content
-            
             message = MockMessage(question)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            result = await project_bot.project_chat(message, Login=login_header)
             
-            if hasattr(project_bot, 'project_chat'):
-                result = await project_bot.project_chat(message, Login=login_header)
-            else:
-                return None
-            
-            if isinstance(result, dict):
-                return result.get("response", None)
-            else:
-                return str(result) if result else None
-                
+            if isinstance(result, JSONResponse):
+                body = json.loads(result.body.decode())
+                return body.get("response")
+            elif isinstance(result, dict):
+                return result.get("response")
+            return str(result) if result else None
         except Exception as e:
             logger.error(f"Project bot error: {e}")
             return None
 
-
 # ===========================
-# AI-POWERED ORCHESTRATION AGENT
+# AI ORCHESTRATION AGENT (KEPT INTACT + BUG FIXES)
 # ===========================
 class AIOrchestrationAgent:
     def __init__(self):
-        # This tells the app to connect to the Ollama service running on the VM
-        self.llm = ChatOllama(model="gemma:2b", base_url="http://localhost:11434")
+        self.llm = ChatOllama(model="gemma:2b", base_url="http://localhost:11434", temperature=0)
         
         self.bots = {
             "general": GeneralBotWrapper(),
@@ -675,9 +684,9 @@ class AIOrchestrationAgent:
             )
             
             response = await self.llm.ainvoke(prompt)
-            intent = response.strip().lower()
+            # BUG FIX: Add .content to get text from AIMessage
+            intent = response.content.strip().lower()
             
-            # Validate the response
             valid_intents = ["general", "formula", "report", "menu", "project"]
             if intent in valid_intents:
                 logger.info(f"AI detected intent: {intent}")
@@ -702,7 +711,8 @@ class AIOrchestrationAgent:
             )
             
             response = await self.llm.ainvoke(prompt)
-            return response.strip()
+            # BUG FIX: Add .content to get text from AIMessage
+            return response.content.strip()
             
         except Exception as e:
             logger.error(f"Out-of-scope response generation error: {e}")
@@ -722,7 +732,8 @@ Your task: Rewrite this answer to match your role's personality and communicatio
 Role-adapted answer:"""
             
             response = await self.llm.ainvoke(role_prompt)
-            role_adapted = response.strip()
+            # BUG FIX: Add .content to get text from AIMessage
+            role_adapted = response.content.strip()
             
             if role_adapted and len(role_adapted) > 20:
                 return role_adapted
@@ -737,6 +748,21 @@ Role-adapted answer:"""
         """AI-powered request processing with role-based intelligence"""
         
         update_user_session(username)
+        
+        # Check for greeting FIRST (instant response)
+        if is_greeting(question):
+            logger.info(f"Greeting detected, instant response")
+            greeting_response = get_greeting_response(user_role)
+            enhanced_memory.store_conversation_turn(username, question, greeting_response, "greeting", user_role, thread_id)
+            if thread_id:
+                history_manager.add_message_to_thread(thread_id, question, greeting_response, "greeting")
+            
+            return {
+                "response": greeting_response,
+                "bot_type": "greeting",
+                "thread_id": thread_id,
+                "user_role": user_role
+            }
         
         # Build context
         if is_existing_thread and thread_id:
@@ -1120,29 +1146,31 @@ async def system_status():
     
     return {
         "status": "healthy",
-        "version": "6.0.0-ai-powered-role-based-system",
+        "version": "6.0.1-optimized-with-bugs-fixed",
         "available_bots": [k for k, v in bot_status.items() if v == "available"],
         "bot_status": bot_status,
         "memory_system": memory_stats,
         "features": [
-            "🤖 AI-Powered Intent Detection (No hardcoded rules)",
-            "🎭 Role-Based Response Adaptation (User selects role at login)",
+            "⚡ INSTANT greeting responses (hardcoded)",
+            "🤖 AI-Powered Intent Detection (all bots available)",
+            "🎭 Role-Based Response Adaptation",
             "🚫 Intelligent Out-of-Scope Refusal",
-            "👨‍💻 Developer: Technical responses with code",
-            "🔧 Implementation: Step-by-step client guidance",
-            "📢 Marketing: Business value and ROI focus",
-            "👥 Client: Simple, friendly explanations",
-            "🔑 Admin: Comprehensive system knowledge",
+            "👨‍💻 Developer: Technical responses",
+            "🔧 Implementation: Step-by-step guidance",
+            "📢 Marketing: Business value focus",
+            "👥 Client: Simple explanations",
+            "🔑 Admin: Comprehensive knowledge",
             "💬 ChatGPT-like conversation threads",
-            "🧠 Context-aware memory system",
-            "🔗 Thread isolation for focused conversations",
-            "📊 Cross-session continuity"
+            "🧠 Context-aware memory system"
         ],
-        "orchestration": {
-            "type": "AI-powered",
-            "llm": "gemini-1.5-flash",
-            "hardcoded_rules": "None - fully AI-driven",
-            "out_of_scope_handling": "AI-generated role-appropriate refusals"
+        "optimizations": {
+            "greeting_detection": "Hardcoded - instant response",
+            "llm_temperature": "0 - faster, deterministic",
+            "memory_save_frequency": "Every 10 turns instead of 5",
+            "bug_fixes": [
+                "Fixed .content access on AIMessage objects",
+                "Fixed JSONResponse decoding in all bot wrappers"
+            ]
         }
     }
 
@@ -1197,37 +1225,6 @@ async def get_user_statistics(Login: str = Header(...)):
     }
 
 
-@app.get("/gbaiapi/role_examples", tags=["Role Information"])
-async def get_role_examples():
-    """Get examples of how different roles receive responses"""
-    return {
-        "example_question": "How does the Inventory Management module work?",
-        "role_responses": {
-            "developer": {
-                "style": "Technical with code, APIs, database details",
-                "sample": "The Inventory Management module implements a microservices architecture with REST APIs. Key endpoints: POST /api/inventory/add (JWT auth required), GET /api/inventory/list (pagination supported). Database schema uses inventory_master table with normalized design..."
-            },
-            "implementation": {
-                "style": "Step-by-step configuration and deployment guidance",
-                "sample": "To set up Inventory Management for your client: Step 1) Navigate to Settings > Warehouses and configure all warehouse locations. Step 2) Define item categories and units of measure. Step 3) Use the Excel import template for bulk stock upload..."
-            },
-            "marketing": {
-                "style": "Business benefits, ROI, and competitive advantages",
-                "sample": "Inventory Management delivers measurable business value: Reduces stock losses by 30% through real-time tracking. Prevents costly stockouts with intelligent reorder alerts. Scales effortlessly across multiple warehouses. Clients typically see ROI within 2 months..."
-            },
-            "client": {
-                "style": "Simple, friendly, easy to understand",
-                "sample": "Inventory Management helps you keep track of all your products easily! You can see what's in stock anytime, get alerts when items are running low, and know which products sell best. It's as simple as keeping a digital notebook of your goods!"
-            }
-        },
-        "out_of_scope_example": {
-            "question": "What's the weather like today?",
-            "developer": "I'm your GoodBooks ERP technical assistant. I can help with APIs, system architecture, and technical implementation, but I don't have weather data. What technical aspects can I help you with?",
-            "client": "I'm here to help you with GoodBooks ERP! I don't have information about the weather, but I can show you how to use our system features. What would you like to learn about?"
-        }
-    }
-
-
 @app.post("/gbaiapi/cleanup_old_data", tags=["System Maintenance"])
 async def cleanup_old_data(Login: str = Header(...), days_to_keep: int = 90):
     """Cleanup old data (admin only)"""
@@ -1258,13 +1255,13 @@ async def cleanup_old_data(Login: str = Header(...), days_to_keep: int = 90):
 @app.on_event("startup")
 async def startup_event():
     logger.info("="*70)
-    logger.info("🤖 GoodBooks AI-Powered Role-Based ERP Assistant")
+    logger.info("🤖 GoodBooks AI-Powered Role-Based ERP Assistant (OPTIMIZED)")
     logger.info("="*70)
     logger.info("✨ Features:")
-    logger.info("  • AI-driven orchestration (no hardcoded rules)")
+    logger.info("  • ⚡ Instant greeting responses")
+    logger.info("  • AI-driven bot selection (ALL BOTS AVAILABLE)")
     logger.info("  • Role-based intelligent responses")
-    logger.info("  • Out-of-scope question handling")
-    logger.info("  • User selects role at login")
+    logger.info("  • Bug fixes applied (.content, JSONResponse)")
     logger.info("="*70)
 
     try:
@@ -1290,5 +1287,5 @@ async def shutdown_event():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8010))
-    logger.info(f"🚀 Starting server on port {port}")
+    logger.info(f"🚀 Starting optimized server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
