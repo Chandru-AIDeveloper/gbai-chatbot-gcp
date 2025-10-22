@@ -685,7 +685,7 @@ class AIOrchestrationAgent:
             
             response = await self.llm.ainvoke(prompt)
             # BUG FIX: Add .content to get text from AIMessage
-            intent = response.content.strip().lower()
+            intent = response.strip().lower()
             
             valid_intents = ["general", "formula", "report", "menu", "project"]
             if intent in valid_intents:
@@ -733,7 +733,7 @@ Role-adapted answer:"""
             
             response = await self.llm.ainvoke(role_prompt)
             # BUG FIX: Add .content to get text from AIMessage
-            role_adapted = response.content.strip()
+            role_adapted = response.strip()
             
             if role_adapted and len(role_adapted) > 20:
                 return role_adapted
