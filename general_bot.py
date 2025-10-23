@@ -19,6 +19,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
 from fastapi.middleware.cors import CORSMiddleware
+from orchestrator_main import ROLE_SYSTEM_PROMPTS, is_greeting, get_greeting_response, UserRole
 from fastapi import Header
 from fastapi import APIRouter
 import pickle
@@ -258,6 +259,9 @@ else:
  
 # Enhanced prompt template with memory integration
 prompt_template = """
+Role instructions:
+{role_prompt}
+
 You are an expert assistant for GoodBooks Technologies. Answer the user's question using the provided context, recent conversation history, and relevant memories from past conversations.
  
 Your role is to provide accurate, context-aware, and natural answers that build upon previous interactions and maintain conversational continuity.
@@ -288,6 +292,8 @@ Company Context:
  
 Current User Question:
 {question}
+
+Role-adapted answer:
  
 """
  
@@ -315,6 +321,13 @@ def format_as_points(text: str) -> str:
     points = [point.strip() for point in points if point.strip()]
     formatted_points = '\n'.join([f"- {point}" for point in points])
     return formatted_points
+
+# Injected bot instance (set from main.py)
+general_bot = None
+
+def set_general_bot_instance(bot):
+    global general_bot
+    general_bot = bot
  
 def format_memories(memories: List[Dict]) -> str:
     """Format retrieved memories for prompt"""
@@ -338,68 +351,61 @@ def format_memories(memories: List[Dict]) -> str:
 @app.post("/gbaiapi/chat", tags=["Goodbooks Ai Api"])
 async def chat(message: Message, Login: str = Header(...)):
     user_input = message.content.strip()
- 
-    # Parse login DTO from header
+
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
+        # --- NEW: GET THE ROLE ---
+        user_role = login_dto.get("Role", "client")
+        role_prompt = ROLE_SYSTEM_PROMPTS.get(user_role, ROLE_SYSTEM_PROMPTS.get(UserRole.CLIENT))
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
- 
+
     user_input = spell_check(user_input)
- 
-    # Greeting check
-    greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening"]
-    if user_input.lower() in greetings:
-        # Even for greetings, check if we have past memories to provide personalized response
-        relevant_memories = conversational_memory.retrieve_relevant_memories(username, user_input, k=2)
-       
-        if relevant_memories:
-            formatted_answer = "Hello! Good to see you again. How can I help you today?"
-        else:
-            formatted_answer = "Hello! How can I help you today?"
-       
-       
-        # Add to conversational memory
-        conversational_memory.add_conversation_turn(username, user_input, formatted_answer)
-       
+
+    # Greeting check using orchestrator helper
+    if is_greeting(user_input):
+        formatted_answer = get_greeting_response(user_role)
+        # Persist greeting to memory via injected bot
+        if general_bot:
+            general_bot.add_conversation_turn(username, user_input, formatted_answer)
         return {"response": formatted_answer}
- 
+
     try:
         recent_chat_history_str = ""
- 
-        # Retrieve relevant memories from past conversations
-        relevant_memories = conversational_memory.retrieve_relevant_memories(username, user_input, k=3)
+
+        # Retrieve relevant memories from past conversations via injected bot
+        relevant_memories = general_bot.retrieve_relevant_memories(username, user_input, k=3) if general_bot else []
         formatted_memories = format_memories(relevant_memories)
- 
+
         # Get context from document retriever
         if retriever:
             docs = retriever.invoke(user_input)
             context_str = "\n".join([doc.page_content for doc in docs])
         else:
-            context_str = ""
- 
-        # Create enhanced prompt with memory integration
+            context_str = "No context available."
+
+        # Create the single, powerful prompt (role_prompt is injected into template)
         prompt_text = prompt_template.format(
+            role_prompt=role_prompt,
             recent_chat_history=recent_chat_history_str,
             relevant_memories=formatted_memories,
             context=context_str,
             question=user_input
         )
-       
-        # Generate response
+
+        # Single LLM call
         answer = llm.invoke(prompt_text).content
- 
-        # Clean and format response
+
         cleaned_answer = clean_response(answer)
         formatted_answer = format_as_points(cleaned_answer)
- 
- 
-        # Add conversation turn to long-term memory
-        conversational_memory.add_conversation_turn(username, user_input, formatted_answer)
- 
+
+        # Persist conversation via injected bot
+        if general_bot:
+            general_bot.add_conversation_turn(username, user_input, formatted_answer)
+
         return {"response": formatted_answer}
- 
+
     except Exception as e:
         logger.error(f"Chat error: {traceback.format_exc()}")
         return JSONResponse(
