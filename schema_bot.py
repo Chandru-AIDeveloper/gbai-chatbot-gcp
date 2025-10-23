@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration
-DOCUMENTS_DIR = "data/GBDBSCRIPTS"
+DOCUMENTS_DIR = "/app/data/GBDBSCRIPTS"
 SCHEMA_CHAT_HISTORY_DB = "schema_chat_history.db"
 
 class SchemaTable(BaseModel):

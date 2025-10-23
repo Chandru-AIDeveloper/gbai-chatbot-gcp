@@ -23,7 +23,7 @@ from fastapi import Header
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
  
-DOCUMENTS_DIR = "data/"
+DOCUMENTS_DIR = "/app/data"
  
 class Message(BaseModel):
     content: str
