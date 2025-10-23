@@ -60,14 +60,6 @@ try:
 except ImportError as e:
     GENERAL_BOT_AVAILABLE = False
     logging.warning(f"General bot not available: {e}")
-else:
-    # If the general_bot module defines a conversational memory instance, inject it
-    try:
-        if hasattr(general_bot, 'set_general_bot_instance') and hasattr(general_bot, 'conversational_memory'):
-            general_bot.set_general_bot_instance(general_bot.conversational_memory)
-            logging.info("Injected conversational_memory into general_bot module")
-    except Exception as ex:
-        logging.warning(f"Could not set general_bot instance: {ex}")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1071,16 +1063,18 @@ class ThreadRenameRequest(BaseModel):
 # ===========================
 # API ENDPOINTS
 # ===========================
-# (Make sure to import the bot at the top: `import general_bot`)
-
 @app.post("/gbaiapi/chat", tags=["AI Role-Based Chat"])
 async def ai_role_based_chat(message: Message, Login: str = Header(...)):
+    """
+    AI-powered role-based chat - NEW CONVERSATION (OPTIMIZED)
+    User's role must be provided in Login header
+    """
     try:
-        # We just pass the request directly to the general_bot's chat function
-        return await general_bot.chat(message, Login=Login)
-    except Exception as e:
-        logger.error(f"AI orchestration error: {str(e)}")
-        return JSONResponse(status_code=500, content={"response": "I encountered an error."})
+        login_dto = json.loads(Login)
+        username = login_dto.get("UserName", "anonymous")
+        user_role = login_dto.get("Role", "client").lower()
+    except Exception:
+        return JSONResponse(status_code=400, content={"response": "Invalid login header. Must include UserName and Role"})
     
     # Validate role
     valid_roles = ["developer", "implementation", "marketing", "client", "admin"]
