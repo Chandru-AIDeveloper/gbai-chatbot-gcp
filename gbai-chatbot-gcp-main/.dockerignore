@@ -1,0 +1,27 @@
+# Git
+.git
+.gitignore
+
+# Virtual environment
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE and OS specific
+.vscode/
+.idea/
+*.DS_Store
+
+# Environment variables
+.env
+
+# Docker files
+Dockerfile
+docker-compose.yml
+
+# CRITICAL: Ignore large data and vector stores
+conversational_memory_vectorstore/
+menu_memory_vectorstore/
