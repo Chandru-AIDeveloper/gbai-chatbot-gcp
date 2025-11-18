@@ -29,19 +29,15 @@ class Message(BaseModel):
     content: str
  
 def spell_check(text: str) -> str:
-    # Placeholder for spell check - you can integrate a spell checker here
     return text
  
 def clean_response(text: str) -> str:
-    # Clean up response formatting
     text = text.strip()
-    # Remove excessive newlines
     while '\n\n\n' in text:
         text = text.replace('\n\n\n', '\n\n')
     return text
  
 def format_as_points(text: str) -> str:
-    # Keep natural paragraph format instead of forcing bullet points
     return text
  
  
@@ -49,13 +45,12 @@ app = FastAPI()
  
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # You can specify domains in production
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods including OPTIONS
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
  
-# Get the Ollama URL from an environment variable, defaulting to localhost for local development
 llm = ChatOllama(
     model="gemma:2b",
     base_url="http://localhost:11434",
@@ -68,32 +63,24 @@ def load_csv_as_document(file_path: str) -> List[Document]:
     try:
         df = pd.read_csv(file_path, encoding='cp1252')
        
-        # Convert CSV to a more readable format
         csv_content = f"Data from {os.path.basename(file_path)}:\n\n"
-       
-        # Add column information
         csv_content += f"Columns: {', '.join(df.columns.tolist())}\n\n"
        
-        # Convert each row to a readable format
         for idx, row in df.iterrows():
             row_content = f"Record {idx + 1}:\n"
             for col in df.columns:
                 row_content += f"- {col}: {row[col]}\n"
             row_content += "\n"
            
-            # Create a document for each row or group of rows
             doc = Document(
                 page_content=row_content,
                 metadata={"source": file_path, "row_index": idx}
             )
             docs.append(doc)
        
-        # Also create a summary document with overall structure
         summary_content = f"Dataset Summary for {os.path.basename(file_path)}:\n"
         summary_content += f"Total records: {len(df)}\n"
         summary_content += f"Columns: {', '.join(df.columns.tolist())}\n\n"
-       
-        # Add sample data
         summary_content += "Sample data:\n"
         summary_content += df.head().to_string(index=False)
        
@@ -108,7 +95,6 @@ def load_csv_as_document(file_path: str) -> List[Document]:
        
     return docs
  
-# Enhanced document loading function
 def load_and_split_documents(documents_dir: str) -> List[Document]:
     all_docs = []
     
@@ -117,46 +103,48 @@ def load_and_split_documents(documents_dir: str) -> List[Document]:
         logger.info(f"Loading file: {menu_docs_path}")
         csv_docs = load_csv_as_document(menu_docs_path)
         all_docs.extend(csv_docs)
-        logger.info(f"Loaded {len(csv_docs)} documents from CSV: {menu_docs_path}")
+        logger.info(f"✅ Loaded {len(csv_docs)} documents from CSV: {menu_docs_path}")
     else:
-        logger.warning(f"{menu_docs_path} not found.")
+        logger.warning(f"⚠️ {menu_docs_path} not found.")
 
     return all_docs
  
-# Load documents
 all_docs = load_and_split_documents(DOCUMENTS_DIR)
 text_chunks = None
 retriever = None
  
 if all_docs:
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1500,  # Increased chunk size for better context
-        chunk_overlap=300  # Increased overlap
+        chunk_size=1500,
+        chunk_overlap=300
     )
     text_chunks = text_splitter.split_documents(all_docs)
-    logger.info(f"Loaded {len(all_docs)} docs, split into {len(text_chunks)} chunks.")
+    logger.info(f"✅ Loaded {len(all_docs)} docs, split into {len(text_chunks)} chunks.")
    
-    # Also fix the deprecated HuggingFaceEmbeddings import
     try:
         from langchain_huggingface import HuggingFaceEmbeddings
     except ImportError:
         from langchain_community.embeddings import HuggingFaceEmbeddings
-        logger.warning("Using deprecated HuggingFaceEmbeddings. Consider upgrading: pip install langchain-huggingface")
+        logger.warning("Using deprecated HuggingFaceEmbeddings.")
    
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vectorstore = FAISS.from_documents(text_chunks, embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 10})  # Retrieve more context
-    logger.info("FAISS vectorstore and retriever initialized.")
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
+    logger.info("✅ FAISS vectorstore and retriever initialized.")
 else:
-    logger.warning("No documents loaded. RAG will not be available.")
+    logger.warning("⚠️ No documents loaded. RAG will not be available.")
  
-# Updated prompt template for more natural responses
+# ✅ UPDATED: Enhanced prompt with orchestrator context
 prompt_template = """
 [ROLE]
 You are an expert Menu assistant for GoodBooks Technologies.
 
 [TASK]
 Answer user questions related to Menu in a natural and conversational way.
+
+[ORCHESTRATOR CONTEXT]
+Conversation context from current session:
+{orchestrator_context}
 
 [CONTEXT]
 Use the Menu context provided below to find the answer:
@@ -166,9 +154,11 @@ Use the Menu context provided below to find the answer:
 {history}
 
 [REASONING]
-- First, analyze the given Menu context carefully.
+- Check the orchestrator context for any relevant prior discussion
+- Analyze the given Menu context carefully.
 - If the answer exists in the context, summarize it clearly.
 - If the answer is missing, do not invent information.
+- Maintain continuity with previous conversation
 
 [OUTPUT]
 Provide a clear, concise, and professional answer in natural language that maintains conversational continuity.
@@ -191,7 +181,8 @@ if retriever:
         {
             "context": lambda x: retriever.invoke(x["question"]),
             "question": lambda x: x["question"],
-            "history": lambda x: x["history"]
+            "history": lambda x: x["history"],
+            "orchestrator_context": lambda x: x.get("orchestrator_context", "No prior context")
         }
         | prompt
         | llm
@@ -202,7 +193,6 @@ if retriever:
 async def chat(message: Message, Login: str = Header(...)):
     user_input = message.content.strip()
    
-    # Parse login DTO from header
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
@@ -210,39 +200,49 @@ async def chat(message: Message, Login: str = Header(...)):
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
    
     user_input = spell_check(user_input)
+    
+    # ✅ FIX: Get orchestrator context
+    orchestrator_context = getattr(message, 'context', '')
+    logger.info(f"📚 Received orchestrator context: {len(orchestrator_context)} chars")
    
-    # Enhanced greeting detection
     greetings = [
         "hi", "hello", "hey", "good morning", "good afternoon",
         "good evening", "howdy", "greetings", "what's up", "sup"
     ]
     if any(greeting in user_input.lower() for greeting in greetings):
         formatted_answer = "Hello! I'm here to help you with any questions you have. I can assist you with information from the available data sources. What would you like to know?"
-       
         return {"response": formatted_answer}
    
     try:
         history_str = ""
        
+        # ✅ FIX: Log retrieval
         if retriever:
-            answer = chain.invoke({"question": user_input, "history": history_str})
+            logger.info(f"🔍 Searching menu knowledge base for: {user_input[:100]}")
+            retrieved_docs = retriever.invoke(user_input)
+            logger.info(f"📚 Retrieved {len(retrieved_docs)} documents")
+            
+            answer = chain.invoke({
+                "question": user_input,
+                "history": history_str,
+                "orchestrator_context": orchestrator_context
+            })
         else:
-            # Fallback when no documents are loaded
             system_prompt = """You are a helpful AI assistant. Provide natural, conversational responses to user questions.
             Be friendly, informative, and honest about what you can and cannot help with."""
            
             full_prompt = f"{system_prompt}\n\nConversation history:\n{history_str}\nHuman: {user_input}\nAssistant:"
             answer = llm.invoke(full_prompt).content
+        
+        logger.info(f"✅ Generated answer: {len(answer)} chars")
        
         cleaned_answer = clean_response(answer)
         formatted_answer = format_as_points(cleaned_answer)
        
-        # Store conversation
-       
         return {"response": formatted_answer}
        
     except Exception as e:
-        logger.error(f"Chat error: {traceback.format_exc()}")
+        logger.error(f"❌ Chat error: {traceback.format_exc()}")
         return JSONResponse(
             status_code=500,
             content={"response": "I apologize, but I encountered an error while processing your request. Please try again or rephrase your question."}

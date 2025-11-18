@@ -29,7 +29,7 @@ class Message(BaseModel):
     content: str
 
 def spell_check(text: str) -> str:
-    return text  # Placeholder (can add real spell checker later)
+    return text
 
 def clean_response(text: str) -> str:
     text = text.strip()
@@ -51,7 +51,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Get the Ollama URL from an environment variable, defaulting to localhost for local development
 llm = ChatOllama(
     model="gemma:2b",
     base_url="http://localhost:11434",
@@ -101,9 +100,9 @@ def load_and_split_documents(documents_dir: str) -> List[Document]:
         logger.info(f"Loading file: {report_docs_path}")
         csv_docs = load_csv_as_document(report_docs_path)
         all_docs.extend(csv_docs)
-        logger.info(f"Loaded {len(csv_docs)} documents from CSV: {report_docs_path}")
+        logger.info(f"✅ Loaded {len(csv_docs)} documents from CSV: {report_docs_path}")
     else:
-        logger.warning(f"{report_docs_path} not found.")
+        logger.warning(f"⚠️ {report_docs_path} not found.")
 
     return all_docs
 
@@ -117,7 +116,7 @@ if all_docs:
         chunk_overlap=300
     )
     text_chunks = text_splitter.split_documents(all_docs)
-    logger.info(f"Loaded {len(all_docs)} docs, split into {len(text_chunks)} chunks.")
+    logger.info(f"✅ Loaded {len(all_docs)} docs, split into {len(text_chunks)} chunks.")
 
     try:
         from langchain_huggingface import HuggingFaceEmbeddings
@@ -128,11 +127,11 @@ if all_docs:
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vectorstore = FAISS.from_documents(text_chunks, embeddings)
     retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
-    logger.info("FAISS retriever ready.")
+    logger.info("✅ FAISS retriever ready.")
 else:
-    logger.warning("No documents loaded. RAG not available.")
+    logger.warning("⚠️ No documents loaded. RAG not available.")
 
-# Updated prompt for Report Data chatbot
+# ✅ UPDATED: Enhanced prompt with orchestrator context
 prompt_template = """
 [ROLE]
 You are an expert Report Data assistant for GoodBooks Technologies.
@@ -140,6 +139,10 @@ You are an expert Report Data assistant for GoodBooks Technologies.
 [TASK]
 Answer user questions strictly from the report data (CSV or other uploaded reports).
 Do not use outside/pretrained knowledge.
+
+[ORCHESTRATOR CONTEXT]
+Conversation context from current session:
+{orchestrator_context}
 
 [CONTEXT]
 Report Data context:
@@ -149,9 +152,11 @@ Report Data context:
 {history}
 
 [REASONING]
+- Check the orchestrator context for any relevant prior discussion
 - Analyze the given report data carefully.
 - If the answer exists, summarize clearly.
 - If missing, do not invent.
+- Maintain continuity with previous conversation
 
 [OUTPUT]
 Provide a clear and professional answer.
@@ -173,7 +178,8 @@ if retriever:
         {
             "context": lambda x: retriever.invoke(x["question"]),
             "question": lambda x: x["question"],
-            "history": lambda x: x["history"]
+            "history": lambda x: x["history"],
+            "orchestrator_context": lambda x: x.get("orchestrator_context", "No prior context")
         }
         | prompt
         | llm
@@ -192,29 +198,43 @@ async def report_chat(message: Message, Login: str = Header(...)):
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
 
     user_input = spell_check(user_input)
+    
+    # ✅ FIX: Get orchestrator context
+    orchestrator_context = getattr(message, 'context', '')
+    logger.info(f"📚 Received orchestrator context: {len(orchestrator_context)} chars")
 
     greetings = ["hi","hello","hey","good morning","good afternoon","good evening","howdy","greetings","what's up","sup"]
     if any(g in user_input.lower() for g in greetings):
-        formatted_answer = "Hello! I’m your Report Data assistant. Ask me anything about the uploaded report data."
+        formatted_answer = "Hello! I'm your Report Data assistant. Ask me anything about the uploaded report data."
         return {"response": formatted_answer}
 
     try:
         history_str = ""
-
+        
+        # ✅ FIX: Log retrieval
         if retriever:
-            answer = chain.invoke({"question": user_input, "history": history_str})
+            logger.info(f"🔍 Searching report knowledge base for: {user_input[:100]}")
+            retrieved_docs = retriever.invoke(user_input)
+            logger.info(f"📚 Retrieved {len(retrieved_docs)} documents")
+            
+            answer = chain.invoke({
+                "question": user_input,
+                "history": history_str,
+                "orchestrator_context": orchestrator_context
+            })
         else:
             fallback_prompt = f"Only answer based on data context. Human: {user_input}\nAssistant:"
             answer = llm.invoke(fallback_prompt).content
+        
+        logger.info(f"✅ Generated answer: {len(answer)} chars")
 
         cleaned_answer = clean_response(answer)
         formatted_answer = format_as_points(cleaned_answer)
 
-
         return {"response": formatted_answer}
 
     except Exception as e:
-        logger.error(f"Chat error: {traceback.format_exc()}")
+        logger.error(f"❌ Chat error: {traceback.format_exc()}")
         return JSONResponse(
             status_code=500,
             content={"response": "Error while processing your request. Please try again."}

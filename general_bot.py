@@ -45,16 +45,14 @@ app = FastAPI()
  
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # You can specify domains in production
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods including OPTIONS
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
  
  
 # Initialize LLM
-# Get the Ollama URL from an environment variable, defaulting to localhost for local development
-
 llm = ChatOllama(
     model="gemma:2b",
     base_url="http://localhost:11434",
@@ -215,11 +213,9 @@ conversational_memory = ConversationalMemory(
  
 # Load and split documents
 def load_text_and_json_files(documents_dir):
-    # --- THIS CHECK PREVENTS THE CRASH ---
     if not os.path.exists(documents_dir):
         logging.warning(f"Documents directory '{documents_dir}' not found. RAG will not be available.")
-        return [] # Return an empty list if the directory doesn't exist
-    # --- END OF FIX ---
+        return []
 
     all_docs = []
     try:
@@ -239,6 +235,7 @@ def load_text_and_json_files(documents_dir):
         logging.error(f"Error reading documents directory {documents_dir}: {e}")
 
     return all_docs
+
 all_docs = load_text_and_json_files(DOCUMENTS_DIR)
 text_chunks = None
 retriever = None
@@ -248,15 +245,15 @@ if all_docs:
         chunk_size=1000, chunk_overlap=200
     )
     text_chunks = text_splitter.split_documents(all_docs)
-    logger.info(f"Loaded {len(all_docs)} docs, split into {len(text_chunks)} chunks.")
+    logger.info(f"✅ Loaded {len(all_docs)} docs, split into {len(text_chunks)} chunks.")
  
     vectorstore = FAISS.from_documents(text_chunks, embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-    logger.info("FAISS vectorstore and retriever initialized.")
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+    logger.info("✅ FAISS vectorstore and retriever initialized.")
 else:
-    logger.warning("No documents loaded. RAG will not be available.")
+    logger.warning("⚠️ No documents loaded. RAG will not be available.")
  
-# Enhanced prompt template with memory integration
+# Enhanced prompt template with memory integration AND orchestrator context
 prompt_template = """
 You are an expert assistant for GoodBooks Technologies. Answer the user's question using the provided context, recent conversation history, and relevant memories from past conversations.
  
@@ -264,18 +261,22 @@ Your role is to provide accurate, context-aware, and natural answers that build 
  
 Guidelines:
 1. Use the provided company context ({context}) as the primary source of truth for factual information.
-2. Consider the recent conversation history ({recent_chat_history}) for immediate context.
-3. Use relevant memories from past conversations ({relevant_memories}) to maintain long-term conversational context and continuity.
+2. Consider the orchestrator conversation context ({orchestrator_context}) for immediate continuity across the conversation.
+3. Consider the recent conversation history ({recent_chat_history}) for immediate context.
+4. Use relevant memories from past conversations ({relevant_memories}) to maintain long-term conversational context and continuity.
    - Reference previous discussions when relevant
    - Build upon past conversations naturally
    - Remember user preferences and previous topics discussed
-4. If the context does not contain the answer, rely on your general knowledge as a language model.
-5. If you genuinely do not know the answer, say "I don't know" and suggest that the user ask something else.
-6. Do not include reference numbers, citations, or system IDs in your response.
-7. Keep your responses clear, concise, and helpful.
-8. Maintain a natural conversational flow that acknowledges past interactions when relevant.
+5. If the context does not contain the answer, rely on your general knowledge as a language model.
+6. If you genuinely do not know the answer, say "I don't know" and suggest that the user ask something else.
+7. Do not include reference numbers, citations, or system IDs in your response.
+8. Keep your responses clear, concise, and helpful.
+9. Maintain a natural conversational flow that acknowledges past interactions when relevant.
  
 ---
+
+Orchestrator Conversation Context (from current session):
+{orchestrator_context}
  
 Relevant Memories from Past Conversations:
 {relevant_memories}
@@ -347,6 +348,10 @@ async def chat(message: Message, Login: str = Header(...)):
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
  
     user_input = spell_check(user_input)
+    
+    # ✅ FIX: Get orchestrator context from message object
+    orchestrator_context = getattr(message, 'context', '')
+    logger.info(f"📚 Received orchestrator context: {len(orchestrator_context)} chars")
  
     # Greeting check
     greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening"]
@@ -372,28 +377,46 @@ async def chat(message: Message, Login: str = Header(...)):
         relevant_memories = conversational_memory.retrieve_relevant_memories(username, user_input, k=3)
         formatted_memories = format_memories(relevant_memories)
  
-        # Get context from document retriever
+        # ✅ FIX: Get context from document retriever (KNOWLEDGE BASE)
         if retriever:
+            logger.info(f"🔍 Searching knowledge base for: {user_input[:100]}")
             docs = retriever.invoke(user_input)
-            context_str = "\n".join([doc.page_content for doc in docs])
+            logger.info(f"📚 Retrieved {len(docs)} documents from knowledge base")
+            
+            if docs:
+                logger.info(f"📄 First doc preview: {docs[0].page_content[:150]}")
+                context_str = "\n".join([doc.page_content for doc in docs])
+            else:
+                logger.warning("⚠️ No documents found in knowledge base")
+                context_str = ""
         else:
+            logger.warning("⚠️ Retriever not available")
             context_str = ""
  
-        # Create enhanced prompt with memory integration
+        # ✅ FIX: Create enhanced prompt with ALL context sources
         prompt_text = prompt_template.format(
+            orchestrator_context=orchestrator_context if orchestrator_context else "No prior context",
             recent_chat_history=recent_chat_history_str,
             relevant_memories=formatted_memories,
-            context=context_str,
+            context=context_str if context_str else "No relevant documents found in knowledge base",
             question=user_input
         )
+        
+        logger.info(f"📝 Prompt length: {len(prompt_text)} chars")
+        logger.info(f"   - Orchestrator context: {len(orchestrator_context)} chars")
+        logger.info(f"   - KB context: {len(context_str)} chars")
+        logger.info(f"   - Memories: {len(formatted_memories)} chars")
        
         # Generate response
+        logger.info("🤖 Generating response with LLM...")
         answer = llm.invoke(prompt_text).content
  
         # Clean and format response
         cleaned_answer = clean_response(answer)
         formatted_answer = format_as_points(cleaned_answer)
- 
+        
+        logger.info(f"✅ Generated answer: {len(formatted_answer)} chars")
+        logger.info(f"📤 Answer preview: {formatted_answer[:150]}")
  
         # Add conversation turn to long-term memory
         conversational_memory.add_conversation_turn(username, user_input, formatted_answer)
@@ -401,7 +424,7 @@ async def chat(message: Message, Login: str = Header(...)):
         return {"response": formatted_answer}
  
     except Exception as e:
-        logger.error(f"Chat error: {traceback.format_exc()}")
+        logger.error(f"❌ Chat error: {traceback.format_exc()}")
         return JSONResponse(
             status_code=500,
             content={"response": "An error occurred while processing your request."}
@@ -425,7 +448,9 @@ async def get_memory_stats(Login: str = Header(...)):
         "username": username,
         "user_memories": user_memory_count,
         "total_memories": total_memories,
-        "memory_enabled": True
+        "memory_enabled": True,
+        "retriever_available": retriever is not None,
+        "documents_loaded": len(all_docs) if all_docs else 0
     }
  
 if __name__ == "__main__":

@@ -553,6 +553,12 @@ enhanced_memory = EnhancedConversationalMemory(MEMORY_VECTORSTORE_PATH, "metadat
 # ===========================
 # BOT WRAPPERS (WITH ENHANCED LOGGING)
 # ===========================
+class EnhancedMessage:
+    """Enhanced message object that includes conversation context"""
+    def __init__(self, content: str, context: str = ""):
+        self.content = content
+        self.context = context  # Pass conversation context to sub-bots
+
 class GeneralBotWrapper:
     @staticmethod
     async def answer(question: str, context: str, user_role: str) -> str:
@@ -561,26 +567,49 @@ class GeneralBotWrapper:
             return None
         try:
             logger.info(f"📞 Calling general_bot with question: {question[:100]}")
-            class MockMessage:
-                def __init__(self, content):
-                    self.content = content
-            message = MockMessage(question)
+            logger.info(f"📚 Passing context: {len(context)} chars")
+            
+            # Create enhanced message with context
+            message = EnhancedMessage(question, context)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            
             result = await general_bot.chat(message, Login=login_header)
             
+            response = None
             if isinstance(result, JSONResponse):
                 body = json.loads(result.body.decode())
                 response = body.get("response")
-                logger.info(f"✅ General bot returned: {response[:100] if response else 'None'}")
-                return response
             elif isinstance(result, dict):
                 response = result.get("response")
-                logger.info(f"✅ General bot returned: {response[:100] if response else 'None'}")
-                return response
+            else:
+                response = str(result) if result else None
             
-            response = str(result) if result else None
-            logger.info(f"✅ General bot returned: {response[:100] if response else 'None'}")
-            return response
+            # Validate response quality
+            if response:
+                response_lower = response.lower()
+                refusal_patterns = [
+                    "i don't have access",
+                    "i do not have access",
+                    "unable to provide",
+                    "cannot provide",
+                    "don't have information",
+                    "do not have information",
+                    "i am unable to",
+                    "i'm unable to"
+                ]
+                
+                is_refusal = any(pattern in response_lower for pattern in refusal_patterns)
+                
+                if is_refusal:
+                    logger.warning(f"⚠️ General bot returned refusal: {response[:150]}")
+                    return None
+                else:
+                    logger.info(f"✅ General bot returned valid answer: {response[:100]}")
+                    return response
+            else:
+                logger.warning("⚠️ General bot returned empty response")
+                return None
+                
         except Exception as e:
             logger.error(f"❌ General bot error: {e}", exc_info=True)
             return None
@@ -593,26 +622,41 @@ class FormulaBot:
             return None
         try:
             logger.info(f"📞 Calling formula_bot with question: {question[:100]}")
-            class MockMessage:
-                def __init__(self, content):
-                    self.content = content
-            message = MockMessage(question)
+            logger.info(f"📚 Passing context: {len(context)} chars")
+            
+            message = EnhancedMessage(question, context)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            
             result = await formula_bot.chat(message, Login=login_header)
             
+            response = None
             if isinstance(result, JSONResponse):
                 body = json.loads(result.body.decode())
                 response = body.get("response")
-                logger.info(f"✅ Formula bot returned: {response[:100] if response else 'None'}")
-                return response
             elif isinstance(result, dict):
                 response = result.get("response")
-                logger.info(f"✅ Formula bot returned: {response[:100] if response else 'None'}")
-                return response
+            else:
+                response = str(result) if result else None
             
-            response = str(result) if result else None
-            logger.info(f"✅ Formula bot returned: {response[:100] if response else 'None'}")
-            return response
+            if response:
+                response_lower = response.lower()
+                refusal_patterns = [
+                    "i don't have access", "i do not have access", "unable to provide",
+                    "cannot provide", "don't have information", "do not have information"
+                ]
+                
+                is_refusal = any(pattern in response_lower for pattern in refusal_patterns)
+                
+                if is_refusal:
+                    logger.warning(f"⚠️ Formula bot returned refusal: {response[:150]}")
+                    return None
+                else:
+                    logger.info(f"✅ Formula bot returned valid answer: {response[:100]}")
+                    return response
+            else:
+                logger.warning("⚠️ Formula bot returned empty response")
+                return None
+                
         except Exception as e:
             logger.error(f"❌ Formula bot error: {e}", exc_info=True)
             return None
@@ -625,26 +669,41 @@ class ReportBot:
             return None
         try:
             logger.info(f"📞 Calling report_bot with question: {question[:100]}")
-            class MockMessage:
-                def __init__(self, content):
-                    self.content = content
-            message = MockMessage(question)
+            logger.info(f"📚 Passing context: {len(context)} chars")
+            
+            message = EnhancedMessage(question, context)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            
             result = await report_bot.report_chat(message, Login=login_header)
             
+            response = None
             if isinstance(result, JSONResponse):
                 body = json.loads(result.body.decode())
                 response = body.get("response")
-                logger.info(f"✅ Report bot returned: {response[:100] if response else 'None'}")
-                return response
             elif isinstance(result, dict):
                 response = result.get("response")
-                logger.info(f"✅ Report bot returned: {response[:100] if response else 'None'}")
-                return response
+            else:
+                response = str(result) if result else None
             
-            response = str(result) if result else None
-            logger.info(f"✅ Report bot returned: {response[:100] if response else 'None'}")
-            return response
+            if response:
+                response_lower = response.lower()
+                refusal_patterns = [
+                    "i don't have access", "i do not have access", "unable to provide",
+                    "cannot provide", "don't have information", "do not have information"
+                ]
+                
+                is_refusal = any(pattern in response_lower for pattern in refusal_patterns)
+                
+                if is_refusal:
+                    logger.warning(f"⚠️ Report bot returned refusal: {response[:150]}")
+                    return None
+                else:
+                    logger.info(f"✅ Report bot returned valid answer: {response[:100]}")
+                    return response
+            else:
+                logger.warning("⚠️ Report bot returned empty response")
+                return None
+                
         except Exception as e:
             logger.error(f"❌ Report bot error: {e}", exc_info=True)
             return None
@@ -657,26 +716,41 @@ class MenuBot:
             return None
         try:
             logger.info(f"📞 Calling menu_bot with question: {question[:100]}")
-            class MockMessage:
-                def __init__(self, content):
-                    self.content = content
-            message = MockMessage(question)
+            logger.info(f"📚 Passing context: {len(context)} chars")
+            
+            message = EnhancedMessage(question, context)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            
             result = await menu_bot.chat(message, Login=login_header)
             
+            response = None
             if isinstance(result, JSONResponse):
                 body = json.loads(result.body.decode())
                 response = body.get("response")
-                logger.info(f"✅ Menu bot returned: {response[:100] if response else 'None'}")
-                return response
             elif isinstance(result, dict):
                 response = result.get("response")
-                logger.info(f"✅ Menu bot returned: {response[:100] if response else 'None'}")
-                return response
+            else:
+                response = str(result) if result else None
             
-            response = str(result) if result else None
-            logger.info(f"✅ Menu bot returned: {response[:100] if response else 'None'}")
-            return response
+            if response:
+                response_lower = response.lower()
+                refusal_patterns = [
+                    "i don't have access", "i do not have access", "unable to provide",
+                    "cannot provide", "don't have information", "do not have information"
+                ]
+                
+                is_refusal = any(pattern in response_lower for pattern in refusal_patterns)
+                
+                if is_refusal:
+                    logger.warning(f"⚠️ Menu bot returned refusal: {response[:150]}")
+                    return None
+                else:
+                    logger.info(f"✅ Menu bot returned valid answer: {response[:100]}")
+                    return response
+            else:
+                logger.warning("⚠️ Menu bot returned empty response")
+                return None
+                
         except Exception as e:
             logger.error(f"❌ Menu bot error: {e}", exc_info=True)
             return None
@@ -689,29 +763,105 @@ class ProjectBot:
             return None
         try:
             logger.info(f"📞 Calling project_bot with question: {question[:100]}")
-            class MockMessage:
-                def __init__(self, content):
-                    self.content = content
-            message = MockMessage(question)
+            logger.info(f"📚 Passing context: {len(context)} chars")
+            
+            message = EnhancedMessage(question, context)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            
             result = await project_bot.project_chat(message, Login=login_header)
             
+            response = None
             if isinstance(result, JSONResponse):
                 body = json.loads(result.body.decode())
                 response = body.get("response")
-                logger.info(f"✅ Project bot returned: {response[:100] if response else 'None'}")
-                return response
             elif isinstance(result, dict):
                 response = result.get("response")
-                logger.info(f"✅ Project bot returned: {response[:100] if response else 'None'}")
-                return response
+            else:
+                response = str(result) if result else None
             
-            response = str(result) if result else None
-            logger.info(f"✅ Project bot returned: {response[:100] if response else 'None'}")
-            return response
+            if response:
+                response_lower = response.lower()
+                refusal_patterns = [
+                    "i don't have access", "i do not have access", "unable to provide",
+                    "cannot provide", "don't have information", "do not have information"
+                ]
+                
+                is_refusal = any(pattern in response_lower for pattern in refusal_patterns)
+                
+                if is_refusal:
+                    logger.warning(f"⚠️ Project bot returned refusal: {response[:150]}")
+                    return None
+                else:
+                    logger.info(f"✅ Project bot returned valid answer: {response[:100]}")
+                    return response
+            else:
+                logger.warning("⚠️ Project bot returned empty response")
+                return None
+                
         except Exception as e:
             logger.error(f"❌ Project bot error: {e}", exc_info=True)
             return None
+
+# ===========================
+# UPDATED build_conversational_context FUNCTION
+# ===========================
+def build_conversational_context(username: str, current_query: str, thread_id: str = None, thread_isolation: bool = False) -> str:
+    """
+    Build rich conversational context for sub-bots
+    This creates the SHORT-TERM MEMORY that gets passed to bots
+    """
+    context_parts = []
+    
+    # Add user info
+    session_info = user_sessions.get(username, {})
+    if session_info:
+        context_parts.append(f"User: {username}")
+        total_interactions = session_info.get("total_interactions", 0)
+        if total_interactions > 1:
+            context_parts.append(f"(Returning user with {total_interactions} previous interactions)")
+        context_parts.append("")
+    
+    # Add thread conversation history
+    if thread_id:
+        thread = history_manager.get_thread(thread_id)
+        if thread and thread.messages:
+            if thread_isolation:
+                # Thread isolation: Only include current thread messages
+                context_parts.append(f"=== Current Conversation Thread: {thread.title} ===")
+                recent_messages = thread.messages[-5:]  # Last 5 messages for context
+            else:
+                # No isolation: Include recent thread messages
+                context_parts.append(f"=== Recent Conversation ===")
+                recent_messages = thread.messages[-3:]  # Last 3 messages
+            
+            if recent_messages:
+                for i, msg in enumerate(recent_messages, 1):
+                    context_parts.append(f"\nTurn {i}:")
+                    context_parts.append(f"User: {msg['user_message'][:200]}")
+                    context_parts.append(f"Assistant ({msg['bot_type']}): {msg['bot_response'][:200]}")
+                context_parts.append("")
+    
+    # Add retrieved memories from vector memory
+    memories = enhanced_memory.retrieve_contextual_memories(
+        username, current_query, k=2, thread_id=thread_id, thread_isolation=thread_isolation
+    )
+    
+    if memories:
+        context_parts.append("=== Related Past Interactions ===")
+        for i, memory in enumerate(memories, 1):
+            context_parts.append(f"\nPast Interaction {i}:")
+            context_parts.append(f"Previous Q: {memory.get('user_message', '')[:150]}")
+            context_parts.append(f"Previous A: {memory.get('bot_response', '')[:150]}")
+        context_parts.append("")
+    
+    full_context = "\n".join(context_parts)
+    
+    logger.info(f"📚 Built conversational context:")
+    logger.info(f"   - Thread messages: {len(thread.messages) if thread_id and thread else 0}")
+    logger.info(f"   - Retrieved memories: {len(memories)}")
+    logger.info(f"   - Total context size: {len(full_context)} chars")
+    
+    return full_context
 
 # ===========================
 # ENHANCED AI ORCHESTRATION AGENT
