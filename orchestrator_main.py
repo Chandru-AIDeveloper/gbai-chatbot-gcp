@@ -17,62 +17,42 @@ from langchain_ollama import ChatOllama
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
-from google.cloud import firestore
-from google.cloud import storage
-
-# Import bot modules
+# If you use Firestore/GCS, these imports are optional
 try:
-    import formula_bot
-    FORMULA_BOT_AVAILABLE = True
-    logging.info("Formula bot imported successfully")
-except ImportError as e:
-    FORMULA_BOT_AVAILABLE = False
-    logging.warning(f"Formula bot not available: {e}")
+    from google.cloud import firestore
+    from google.cloud import storage
+except Exception:
+    firestore = None
+    storage = None
 
-try:
-    import report_bot
-    REPORT_BOT_AVAILABLE = True
-    logging.info("Report bot imported successfully")
-except ImportError as e:
-    REPORT_BOT_AVAILABLE = False
-    logging.warning(f"Report bot not available: {e}")
+import httpx
 
-try:
-    import menu_bot
-    MENU_BOT_AVAILABLE = True
-    logging.info("Menu bot imported successfully")
-except ImportError as e:
-    MENU_BOT_AVAILABLE = False
-    logging.warning(f"Menu bot not available: {e}")
-
-try:
-    import project_bot
-    PROJECT_BOT_AVAILABLE = True
-    logging.info("Project bot imported successfully")
-except ImportError as e:
-    PROJECT_BOT_AVAILABLE = False
-    logging.warning(f"Project bot not available: {e}")
-
-try:
-    import general_bot
-    GENERAL_BOT_AVAILABLE = True
-    logging.info("General bot imported successfully")
-except ImportError as e:
-    GENERAL_BOT_AVAILABLE = False
-    logging.warning(f"General bot not available: {e}")
-
+# ---------------------------
+# Basic logging
+# ---------------------------
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("orchestrator")
 
-# GCP Configuration
-GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
-GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME')
-db = firestore.Client(project=GCP_PROJECT_ID)
-storage_client = storage.Client(project=GCP_PROJECT_ID)
-bucket = storage_client.bucket(GCS_BUCKET_NAME)
+# ---------------------------
+# Optional GCP initialization
+# ---------------------------
+GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
+GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME")
+db = None
+bucket = None
+try:
+    if GCP_PROJECT_ID and firestore:
+        db = firestore.Client(project=GCP_PROJECT_ID)
+    if GCS_BUCKET_NAME and storage:
+        storage_client = storage.Client(project=GCP_PROJECT_ID)
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+    logger.info(f"GCP config: project={GCP_PROJECT_ID} bucket={GCS_BUCKET_NAME}")
+except Exception as e:
+    logger.warning(f"GCP init failed (continuing without): {e}")
 
-logger.info(f"Connected to GCP Project: {GCP_PROJECT_ID}, Bucket: {GCS_BUCKET_NAME}")
-
+# ---------------------------
+# Roles & greetings
+# ---------------------------
 class UserRole:
     DEVELOPER = "developer"
     IMPLEMENTATION = "implementation"
@@ -80,32 +60,6 @@ class UserRole:
     CLIENT = "client"
     ADMIN = "admin"
 
-# Memory storage
-MEMORY_VECTORSTORE_PATH = "conversational_memory_vectorstore"
-chats_db = {}
-conversational_memory_metadata = {}
-user_sessions = {}
-
-# ===========================
-# PERFORMANCE MONITORING MIDDLEWARE
-# ===========================
-class PerformanceMonitoringMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        start_time = time.time()
-        response = await call_next(request)
-        process_time = time.time() - start_time
-        response.headers["X-Process-Time"] = f"{process_time:.2f}s"
-        
-        if process_time > 1.0:
-            logger.info(f"⏱️ Request {request.url.path} took {process_time:.2f}s")
-        else:
-            logger.info(f"⚡ Request {request.url.path} took {process_time:.2f}s")
-        
-        return response
-
-# ===========================
-# HARDCODED GREETINGS (INSTANT RESPONSE)
-# ===========================
 GREETING_PATTERNS = [
     r'^(hi|hello|hey|greetings|good morning|good afternoon|good evening|sup|yo|howdy)$',
     r'^(hi|hello|hey)\s+(there|everyone|all)$',
@@ -114,163 +68,28 @@ GREETING_PATTERNS = [
 ]
 
 ROLE_GREETINGS = {
-    UserRole.DEVELOPER: """Hi! I'm your GoodBooks ERP technical assistant.
-
-I can help with:
-• System architecture & APIs
-• Database schemas & queries
-• Code examples & implementation
-• Technical troubleshooting
-
-What technical challenge can I solve?""",
-
-    UserRole.IMPLEMENTATION: """Hello! I'm your GoodBooks implementation consultant.
-
-I assist with:
-• Setup & configuration steps
-• Client deployment procedures
-• Best practices & troubleshooting
-
-How can I help with implementation?""",
-
-    UserRole.MARKETING: """Hi! I'm your GoodBooks product expert.
-
-I help with:
-• Business value & ROI metrics
-• Competitive advantages
-• Sales materials & success stories
-
-What would you like to explore?""",
-
-    UserRole.CLIENT: """Hello! Welcome to GoodBooks ERP! 😊
-
-I'm here to help you with:
-• Understanding features
-• Step-by-step guidance
-• Finding what you need
-
-What would you like to learn?""",
-
-    UserRole.ADMIN: """Hello! I'm your GoodBooks system administrator assistant.
-
-I help with:
-• System administration
-• Configuration management
-• User permissions & monitoring
-
-What can I assist you with?"""
+    UserRole.DEVELOPER: "Hi! I'm your GoodBooks ERP technical assistant.",
+    UserRole.IMPLEMENTATION: "Hello! I'm your GoodBooks implementation consultant.",
+    UserRole.MARKETING: "Hi! I'm your GoodBooks product expert.",
+    UserRole.CLIENT: "Hello! Welcome to GoodBooks ERP! 😊",
+    UserRole.ADMIN: "Hello! I'm your GoodBooks system administrator assistant."
 }
 
 def is_greeting(text: str) -> bool:
-    """Fast greeting detection - only for very simple greetings"""
-    text_lower = text.lower().strip()
-    
-    # Only match very simple, short greetings
-    if len(text_lower.split()) > 4:
+    t = text.lower().strip()
+    if len(t.split()) > 4:
         return False
-    
-    for pattern in GREETING_PATTERNS:
-        if re.search(pattern, text_lower):
+    for p in GREETING_PATTERNS:
+        if re.search(p, t):
             return True
     return False
 
 def get_greeting_response(user_role: str) -> str:
-    """Get instant greeting response"""
     return ROLE_GREETINGS.get(user_role, ROLE_GREETINGS[UserRole.CLIENT])
 
-# ===========================
-# ROLE-BASED SYSTEM PROMPTS
-# ===========================
-ROLE_SYSTEM_PROMPTS = {
-    UserRole.DEVELOPER: """You are a senior software architect and technical expert at GoodBooks Technologies ERP system.
-
-Your identity and style:
-- You speak to a fellow developer/engineer who understands technical concepts
-- Use technical terminology, architecture patterns, and code concepts naturally
-- Discuss APIs, databases, integrations, algorithms, and system design
-- Provide technical depth with implementation details
-- Mention code examples, endpoints, schemas when relevant
-- Think like a senior developer explaining to a peer
-
-Remember: You are the technical expert helping another technical person. Be precise, detailed, and technical.""",
-
-    UserRole.IMPLEMENTATION: """You are an experienced implementation consultant at GoodBooks Technologies ERP system.
-
-Your identity and style:
-- You speak to an implementation team member who guides clients through setup
-- Provide step-by-step configuration and deployment instructions
-- Focus on practical "how-to" guidance for client rollouts
-- Include best practices, common issues, and troubleshooting tips
-- Explain as if preparing someone to train end clients
-- Balance technical accuracy with practical applicability
-
-Remember: You are the implementation expert helping someone deploy the system for clients.""",
-
-    UserRole.MARKETING: """You are a product marketing and sales expert at GoodBooks Technologies ERP system.
-
-Your identity and style:
-- You speak to a marketing/sales team member who needs to sell the solution
-- Emphasize business value, ROI, competitive advantages, and client benefits
-- Use persuasive, benefit-focused language that highlights solutions to business problems
-- Include success metrics, cost savings, efficiency gains, and market differentiation
-- Think about what makes clients say "yes" to purchasing
-
-Remember: You are the business value expert helping close deals and communicate benefits.""",
-
-    UserRole.CLIENT: """You are a friendly, patient customer success specialist at GoodBooks Technologies ERP system.
-
-Your identity and style:
-- You speak to an end user/client who may not be technical
-- Use simple, clear, everyday language - avoid all technical jargon
-- Be warm, encouraging, and supportive in your tone
-- Explain features by how they help daily work, using real-world analogies
-- Make complex things feel simple and achievable
-- Think like a helpful teacher explaining to someone learning
-
-Remember: You are the friendly guide helping a client use the system successfully.""",
-
-    UserRole.ADMIN: """You are a comprehensive system administrator and expert at GoodBooks Technologies ERP system.
-
-Your identity and style:
-- You speak to a system administrator who needs complete information
-- Provide comprehensive coverage: technical, business, and operational aspects
-- Balance depth with breadth - cover all angles of a topic
-- Include administration, configuration, management, and oversight details
-- Use professional but accessible language suitable for all contexts
-
-Remember: You are the complete expert providing full system knowledge."""
-}
-
-# ===========================
-# AI ORCHESTRATOR SYSTEM PROMPT (SIMPLIFIED)
-# ===========================
-ORCHESTRATOR_SYSTEM_PROMPT = """Route this query to ONE bot:
-- general: company info, policies, employees, modules, products details, contact info.
-- formula: calculations, math expressions
-- report: data analysis, charts, reports
-- menu: navigation, interface help
-- project: project files/reports
-
-Query: {question}
-
-Bot (one word):"""
-
-# ===========================
-# AI OUT-OF-SCOPE REFUSAL PROMPT (OPTIMIZED)
-# ===========================
-OUT_OF_SCOPE_SYSTEM_PROMPT = """You are a GoodBooks ERP assistant ({role}).
-
-User asked about something outside GoodBooks ERP scope.
-
-Question: {question}
-
-Politely decline and redirect to GoodBooks ERP features. Keep it brief and role-appropriate for {role}.
-
-Response:"""
-
-# ===========================
-# CONVERSATION THREADS
-# ===========================
+# ---------------------------
+# Conversation threads
+# ---------------------------
 class ConversationThread:
     def __init__(self, thread_id: str, username: str, title: str = None):
         self.thread_id = thread_id
@@ -317,32 +136,33 @@ class ConversationHistoryManager:
         self.load_threads()
     
     def load_threads(self):
+        if not db:
+            logger.info("Firestore not configured - skipping thread load.")
+            return
         try:
             logger.info("Loading threads from Firestore...")
             threads_ref = db.collection('conversation_threads')
             for doc in threads_ref.stream():
-                thread_data = doc.to_dict()
-                if not thread_data: 
+                data = doc.to_dict()
+                if not data:
                     continue
-                thread = ConversationThread(
-                    thread_data.get("thread_id"), 
-                    thread_data.get("username"), 
-                    thread_data.get("title")
-                )
-                thread.created_at = thread_data.get("created_at")
-                thread.updated_at = thread_data.get("updated_at")
-                thread.messages = thread_data.get("messages", [])
-                thread.is_active = thread_data.get("is_active", True)
-                self.threads[thread_data.get("thread_id")] = thread
+                t = ConversationThread(data.get("thread_id"), data.get("username"), data.get("title"))
+                t.created_at = data.get("created_at")
+                t.updated_at = data.get("updated_at")
+                t.messages = data.get("messages", [])
+                t.is_active = data.get("is_active", True)
+                self.threads[t.thread_id] = t
             logger.info(f"Loaded {len(self.threads)} threads from Firestore.")
         except Exception as e:
             logger.error(f"Failed to load threads from Firestore: {e}", exc_info=True)
 
     def save_threads(self):
+        if not db:
+            logger.info("Firestore not configured - skipping thread save.")
+            return
         try:
             for thread_id, thread in self.threads.items():
-                thread_ref = db.collection('conversation_threads').document(thread_id)
-                thread_ref.set(thread.to_dict())
+                db.collection('conversation_threads').document(thread_id).set(thread.to_dict())
         except Exception as e:
             logger.error(f"Error saving threads to Firestore: {e}")
 
@@ -352,19 +172,25 @@ class ConversationHistoryManager:
         if initial_message:
             thread.title = thread._generate_title_from_message(initial_message)
         self.threads[thread_id] = thread
-        self.save_threads()
+        try:
+            asyncio.create_task(asyncio.to_thread(self.save_threads))
+        except Exception:
+            pass
         logger.info(f"Created new thread {thread_id} for {username}")
         return thread_id
 
     def add_message_to_thread(self, thread_id: str, user_message: str, bot_response: str, bot_type: str):
         if thread_id in self.threads:
             self.threads[thread_id].add_message(user_message, bot_response, bot_type)
-            self.save_threads()
+            try:
+                asyncio.create_task(asyncio.to_thread(self.save_threads))
+            except Exception:
+                pass
     
     def get_user_threads(self, username: str, limit: int = 50) -> List[Dict]:
         user_threads = [
-            thread.to_dict() for thread in self.threads.values() 
-            if thread.username == username and thread.is_active
+            t.to_dict() for t in self.threads.values()
+            if t.username == username and t.is_active
         ]
         user_threads.sort(key=lambda x: x["updated_at"], reverse=True)
         return user_threads[:limit]
@@ -375,7 +201,10 @@ class ConversationHistoryManager:
     def delete_thread(self, thread_id: str, username: str) -> bool:
         if thread_id in self.threads and self.threads[thread_id].username == username:
             self.threads[thread_id].is_active = False
-            self.save_threads()
+            try:
+                asyncio.create_task(asyncio.to_thread(self.save_threads))
+            except Exception:
+                pass
             return True
         return False
     
@@ -383,32 +212,50 @@ class ConversationHistoryManager:
         if thread_id in self.threads and self.threads[thread_id].username == username:
             self.threads[thread_id].title = new_title
             self.threads[thread_id].updated_at = datetime.now().isoformat()
-            self.save_threads()
+            try:
+                asyncio.create_task(asyncio.to_thread(self.save_threads))
+            except Exception:
+                pass
             return True
         return False
     
     def cleanup_old_threads(self, days_to_keep: int = 90):
         cutoff_date = datetime.now() - timedelta(days=days_to_keep)
         cutoff_iso = cutoff_date.isoformat()
-        deleted_count = 0
         threads_to_delete = []
-        
-        for thread_id, thread in self.threads.items():
+        for thread_id, thread in list(self.threads.items()):
             if not thread.is_active and thread.updated_at < cutoff_iso:
                 threads_to_delete.append(thread_id)
-        
         if threads_to_delete:
             for thread_id in threads_to_delete:
                 del self.threads[thread_id]
-                db.collection('conversation_threads').document(thread_id).delete()
-                deleted_count += 1
-            logger.info(f"Cleaned up {deleted_count} old threads")
+                if db:
+                    db.collection('conversation_threads').document(thread_id).delete()
+            logger.info(f"Cleaned up {len(threads_to_delete)} old threads")
 
 history_manager = ConversationHistoryManager()
 
-# ===========================
-# MEMORY SYSTEM
-# ===========================
+# ---------------------------
+# Memory & embeddings
+# ---------------------------
+MEMORY_VECTORSTORE_PATH = "conversational_memory_vectorstore"
+conversational_memory_metadata = {}
+user_sessions = {}
+chats_db = {}
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "2"
+
+try:
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"batch_size": 1}
+    )
+except Exception as e:
+    logger.warning("HuggingFaceEmbeddings unavailable - memory disabled: %s", e)
+    embeddings = None
+
 class EnhancedConversationalMemory:
     def __init__(self, vectorstore_path: str, metadata_file: str, embeddings):
         self.vectorstore_path = vectorstore_path
@@ -420,36 +267,37 @@ class EnhancedConversationalMemory:
     
     def load_memory_vectorstore(self):
         try:
-            faiss_index_blob = bucket.blob(f"{self.vectorstore_path}.faiss")
-            pkl_index_blob = bucket.blob(f"{self.vectorstore_path}.pkl")
-
-            if faiss_index_blob.exists() and pkl_index_blob.exists():
-                logger.info("Downloading FAISS index from Cloud Storage...")
-                os.makedirs(self.vectorstore_path, exist_ok=True)
-                faiss_index_blob.download_to_filename(f"{self.vectorstore_path}.faiss")
-                pkl_index_blob.download_to_filename(f"{self.vectorstore_path}.pkl")
-
-                self.memory_vectorstore = FAISS.load_local(
-                    self.vectorstore_path,
-                    self.embeddings,
-                    allow_dangerous_deserialization=True
-                )
-                logger.info("Loaded memory from GCS.")
-            else:
-                raise FileNotFoundError("FAISS index not found in GCS bucket.")
-
+            if bucket:
+                faiss_blob = bucket.blob(f"{self.vectorstore_path}.faiss")
+                pkl_blob = bucket.blob(f"{self.vectorstore_path}.pkl")
+                if faiss_blob.exists() and pkl_blob.exists():
+                    os.makedirs(self.vectorstore_path, exist_ok=True)
+                    faiss_blob.download_to_filename(f"{self.vectorstore_path}.faiss")
+                    pkl_blob.download_to_filename(f"{self.vectorstore_path}.pkl")
+                    self.memory_vectorstore = FAISS.load_local(self.vectorstore_path, self.embeddings, allow_dangerous_deserialization=True)
+                    logger.info("Loaded memory vectorstore from GCS.")
+                    return
+            if os.path.exists(f"{self.vectorstore_path}.faiss") and os.path.exists(f"{self.vectorstore_path}.pkl"):
+                self.memory_vectorstore = FAISS.load_local(self.vectorstore_path, self.embeddings, allow_dangerous_deserialization=True)
+                logger.info("Loaded memory vectorstore from local disk.")
+                return
         except Exception as e:
-            logger.error(f"Error loading memory from GCS, creating new one: {e}")
+            logger.warning("Could not load memory vectorstore: %s", e)
+        try:
             dummy_doc = Document(page_content="Memory system initialized")
-            self.memory_vectorstore = FAISS.from_documents([dummy_doc], self.embeddings)
+            self.memory_vectorstore = FAISS.from_documents([dummy_doc], self.embeddings) if self.embeddings else None
+            logger.info("Created new memory vectorstore.")
+        except Exception as e:
+            logger.error("Failed initializing memory: %s", e)
+            self.memory_vectorstore = None
     
     def store_conversation_turn(self, username: str, user_message: str, bot_response: str, bot_type: str, user_role: str, thread_id: str = None):
         try:
+            if not self.memory_vectorstore:
+                return
             timestamp = datetime.now().isoformat()
             memory_id = f"{username}_{self.memory_counter}_{int(datetime.now().timestamp())}"
-            
             conversation_context = f"User ({user_role}): {user_message} | Bot ({bot_type}): {bot_response[:200]}"
-            
             memory_doc = Document(
                 page_content=conversation_context,
                 metadata={
@@ -463,577 +311,325 @@ class EnhancedConversationalMemory:
                     "thread_id": thread_id
                 }
             )
-            
             self.memory_vectorstore.add_documents([memory_doc])
-            
-            conversational_memory_metadata[memory_id] = {
-                "username": username,
-                "user_role": user_role,
-                "timestamp": timestamp,
-                "user_message": user_message,
-                "bot_response": bot_response[:200],
-                "bot_type": bot_type,
-                "thread_id": thread_id
-            }
-            
+            conversational_memory_metadata[memory_id] = memory_doc.metadata
             self.memory_counter += 1
-            if self.memory_counter % 20 == 0:  # Reduced frequency - save every 20 instead of 10
-                logger.info("Saving FAISS index to Cloud Storage...")
-                self.memory_vectorstore.save_local(self.vectorstore_path)
-
-                faiss_blob = bucket.blob(f"{self.vectorstore_path}.faiss")
-                pkl_blob = bucket.blob(f"{self.vectorstore_path}.pkl")
-                faiss_blob.upload_from_filename(f"{self.vectorstore_path}.faiss")
-                pkl_blob.upload_from_filename(f"{self.vectorstore_path}.pkl")
-                logger.info("Successfully saved FAISS index to GCS.")
+            if self.memory_counter % 20 == 0:
+                try:
+                    self.memory_vectorstore.save_local(self.vectorstore_path)
+                    if bucket:
+                        bucket.blob(f"{self.vectorstore_path}.faiss").upload_from_filename(f"{self.vectorstore_path}.faiss")
+                        bucket.blob(f"{self.vectorstore_path}.pkl").upload_from_filename(f"{self.vectorstore_path}.pkl")
+                except Exception as e:
+                    logger.warning("Failed saving memory: %s", e)
         except Exception as e:
             logger.error(f"Error storing conversation turn: {e}")
     
     def retrieve_contextual_memories(self, username: str, query: str, k: int = 2, thread_id: str = None, thread_isolation: bool = False) -> List[Dict]:
         try:
-            docs = self.memory_vectorstore.similarity_search(query, k=k * 2)  # Reduced multiplier
-
+            if not self.memory_vectorstore:
+                return []
+            docs = self.memory_vectorstore.similarity_search(query, k=k * 2)
             user_memories = {}
             for doc in docs:
-                if (doc.metadata.get("username") == username and
-                    doc.metadata.get("memory_id") != "init"):
-                    
-                    if thread_isolation and thread_id:
-                        if doc.metadata.get("thread_id") != thread_id:
-                            continue
-                    
-                    memory_id = doc.metadata.get("memory_id")
-                    if memory_id not in user_memories:
-                        user_memories[memory_id] = {
-                            "memory_id": memory_id,
-                            "timestamp": doc.metadata.get("timestamp"),
-                            "user_message": doc.metadata.get("user_message"),
-                            "bot_response": doc.metadata.get("bot_response"),
-                            "bot_type": doc.metadata.get("bot_type"),
-                            "user_role": doc.metadata.get("user_role"),
-                            "thread_id": doc.metadata.get("thread_id"),
+                md = doc.metadata or {}
+                if md.get("username") == username and md.get("memory_id") != "init":
+                    if thread_isolation and thread_id and md.get("thread_id") != thread_id:
+                        continue
+                    mid = md.get("memory_id")
+                    if mid not in user_memories:
+                        user_memories[mid] = {
+                            "memory_id": mid,
+                            "timestamp": md.get("timestamp"),
+                            "user_message": md.get("user_message"),
+                            "bot_response": md.get("bot_response"),
+                            "bot_type": md.get("bot_type"),
+                            "user_role": md.get("user_role"),
+                            "thread_id": md.get("thread_id"),
                             "content": doc.page_content
                         }
-            
-            sorted_memories = sorted(
-                user_memories.values(),
-                key=lambda x: x["timestamp"],
-                reverse=True
-            )
-            
+            sorted_memories = sorted(user_memories.values(), key=lambda x: x.get("timestamp", ""), reverse=True)
             return sorted_memories[:k]
-            
         except Exception as e:
             logger.error(f"Error retrieving memories: {e}")
             return []
 
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["OMP_NUM_THREADS"] = "2"
-
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2", 
-    model_kwargs={'device': 'cpu'}, 
-    encode_kwargs={'batch_size': 1}
-)
 enhanced_memory = EnhancedConversationalMemory(MEMORY_VECTORSTORE_PATH, "metadata.json", embeddings)
 
-# ===========================
-# BOT WRAPPERS (FIXED)
-# ===========================
+# ---------------------------
+# HTTP bot endpoints configuration
+# ---------------------------
+BOT_ENDPOINTS = {
+    "general": os.environ.get("GB_GENERAL_URL", "http://localhost:8085/gbaiapi/chat"),
+    "formula": os.environ.get("GB_FORMULA_URL", "http://localhost:8084/gbaiapi/chat"),
+    "menu": os.environ.get("GB_MENU_URL", "http://localhost:8083/gbaiapi/Menu-chat"),
+    "report": os.environ.get("GB_REPORT_URL", "http://localhost:8082/gbaiapi/Report-chat"),
+    "project": os.environ.get("GB_PROJECT_URL", "http://localhost:8081/gbaiapi/Project File-chat"),
+}
+
+_httpx_client = None
+def get_httpx_client():
+    global _httpx_client
+    if _httpx_client is None:
+        _httpx_client = httpx.AsyncClient(timeout=30.0)
+    return _httpx_client
+
+async def call_bot_via_http(bot_name: str, question: str, user_role: str, username: str, timeout: float = 20.0) -> Optional[str]:
+    url = BOT_ENDPOINTS.get(bot_name)
+    if not url:
+        logger.error("No endpoint configured for bot: %s", bot_name)
+        return None
+    client = get_httpx_client()
+    headers = {"Login": json.dumps({"UserName": username, "Role": user_role})}
+    payload = {"content": question}
+    try:
+        resp = await client.post(url, json=payload, headers=headers, timeout=timeout)
+        if resp.status_code == 200:
+            try:
+                j = resp.json()
+                if isinstance(j, dict) and "response" in j:
+                    return j["response"]
+                return json.dumps(j)
+            except Exception:
+                return resp.text
+        else:
+            logger.warning("Bot %s returned status %s: %s", bot_name, resp.status_code, resp.text[:200])
+            return None
+    except (httpx.ConnectError, httpx.ReadTimeout, httpx.RequestError) as e:
+        logger.error("HTTP call to bot %s failed: %s", bot_name, str(e))
+        return None
+    except Exception as e:
+        logger.error("Unexpected error calling bot %s: %s", bot_name, str(e))
+        return None
+
+# simple wrappers that call above
 class GeneralBotWrapper:
     @staticmethod
-    async def answer(question: str, context: str, user_role: str) -> str:
-        if not GENERAL_BOT_AVAILABLE:
-            return None
-        try:
-            class MockMessage:
-                def __init__(self, content):
-                    self.content = content
-            message = MockMessage(question)
-            login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
-            result = await general_bot.chat(message, Login=login_header)
-            
-            if isinstance(result, JSONResponse):
-                body = json.loads(result.body.decode())
-                return body.get("response")
-            elif isinstance(result, dict):
-                return result.get("response")
-            return str(result) if result else None
-        except Exception as e:
-            logger.error(f"General bot error: {e}")
-            return None
+    async def answer(question: str, context: str, user_role: str, username: str = "orchestrator") -> Optional[str]:
+        return await call_bot_via_http("general", question, user_role, username)
 
 class FormulaBot:
     @staticmethod
-    async def answer(question: str, context: str, user_role: str) -> str:
-        if not FORMULA_BOT_AVAILABLE:
-            return None
-        try:
-            class MockMessage:
-                def __init__(self, content):
-                    self.content = content
-            message = MockMessage(question)
-            login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
-            result = await formula_bot.chat(message, Login=login_header)
-            
-            if isinstance(result, JSONResponse):
-                body = json.loads(result.body.decode())
-                return body.get("response")
-            elif isinstance(result, dict):
-                return result.get("response")
-            return str(result) if result else None
-        except Exception as e:
-            logger.error(f"Formula bot error: {e}")
-            return None
+    async def answer(question: str, context: str, user_role: str, username: str = "orchestrator") -> Optional[str]:
+        return await call_bot_via_http("formula", question, user_role, username)
 
 class ReportBot:
     @staticmethod
-    async def answer(question: str, context: str, user_role: str) -> str:
-        if not REPORT_BOT_AVAILABLE:
-            return None
-        try:
-            class MockMessage:
-                def __init__(self, content):
-                    self.content = content
-            message = MockMessage(question)
-            login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
-            result = await report_bot.report_chat(message, Login=login_header)
-            
-            if isinstance(result, JSONResponse):
-                body = json.loads(result.body.decode())
-                return body.get("response")
-            elif isinstance(result, dict):
-                return result.get("response")
-            return str(result) if result else None
-        except Exception as e:
-            logger.error(f"Report bot error: {e}")
-            return None
+    async def answer(question: str, context: str, user_role: str, username: str = "orchestrator") -> Optional[str]:
+        return await call_bot_via_http("report", question, user_role, username)
 
 class MenuBot:
     @staticmethod
-    async def answer(question: str, context: str, user_role: str) -> str:
-        if not MENU_BOT_AVAILABLE:
-            return None
-        try:
-            class MockMessage:
-                def __init__(self, content):
-                    self.content = content
-            message = MockMessage(question)
-            login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
-            result = await menu_bot.chat(message, Login=login_header)
-            
-            if isinstance(result, JSONResponse):
-                body = json.loads(result.body.decode())
-                return body.get("response")
-            elif isinstance(result, dict):
-                return result.get("response")
-            return str(result) if result else None
-        except Exception as e:
-            logger.error(f"Menu bot error: {e}")
-            return None
+    async def answer(question: str, context: str, user_role: str, username: str = "orchestrator") -> Optional[str]:
+        return await call_bot_via_http("menu", question, user_role, username)
 
 class ProjectBot:
     @staticmethod
-    async def answer(question: str, context: str, user_role: str) -> str:
-        if not PROJECT_BOT_AVAILABLE:
-            return None
-        try:
-            class MockMessage:
-                def __init__(self, content):
-                    self.content = content
-            message = MockMessage(question)
-            login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
-            result = await project_bot.project_chat(message, Login=login_header)
-            
-            if isinstance(result, JSONResponse):
-                body = json.loads(result.body.decode())
-                return body.get("response")
-            elif isinstance(result, dict):
-                return result.get("response")
-            return str(result) if result else None
-        except Exception as e:
-            logger.error(f"Project bot error: {e}")
-            return None
+    async def answer(question: str, context: str, user_role: str, username: str = "orchestrator") -> Optional[str]:
+        return await call_bot_via_http("project", question, user_role, username)
 
-# ===========================
-# OPTIMIZED AI ORCHESTRATION AGENT
-# ===========================
+# ---------------------------
+# Orchestration agent
+# ---------------------------
 class AIOrchestrationAgent:
     def __init__(self):
-        # Optimized LLM for routing
-        self.routing_llm = ChatOllama(
-            model="gemma:2b", 
-            base_url="http://localhost:11434", 
-            temperature=0,
-            num_predict=10,  # Only need 1 word for routing
-            num_ctx=1024,    # Smaller context for faster processing
-            repeat_penalty=1.1,
-            top_k=20,
-            top_p=0.8
-        )
-        
-        # Separate LLM for response generation
-        self.response_llm = ChatOllama(
-            model="gemma:2b",
-            base_url="http://localhost:11434",
-            temperature=0.3,
-            num_predict=256,  # Limit response length
-            num_ctx=2048,
-            repeat_penalty=1.1,
-            top_k=40,
-            top_p=0.9
-        )
-        
-        self.bots = {
-            "general": GeneralBotWrapper(),
-            "formula": FormulaBot(),
-            "report": ReportBot(),
-            "menu": MenuBot(),
-            "project": ProjectBot()
-        }
-        
-        # Intent cache for faster routing
-        self.intent_cache = {}
-    
+        try:
+            self.routing_llm = ChatOllama(
+                model=os.environ.get("ORCH_MODEL", "gemma:2b"),
+                base_url=os.environ.get("OLLAMA_URL", "http://localhost:11434"),
+                temperature=0
+            )
+            self.response_llm = ChatOllama(
+                model=os.environ.get("ORCH_MODEL", "gemma:2b"),
+                base_url=os.environ.get("OLLAMA_URL", "http://localhost:11434"),
+                temperature=0.3
+            )
+        except Exception as e:
+            logger.warning("ChatOllama init failed in orchestrator: %s", e)
+            self.routing_llm = None
+            self.response_llm = None
+        self.intent_cache: Dict[str, str] = {}
+
     def _get_cached_intent(self, question: str) -> Optional[str]:
-        """Fast keyword-based routing - bypasses LLM for common queries"""
-        question_lower = question.lower().strip()
-        
-        # Formula bot keywords
-        if any(word in question_lower for word in ['calculate', 'compute', 'formula', 'math', 'sum', 'average', 'total', 'count', '+', '-', '*', '/', '=']):
-            logger.info("🚀 Fast route: formula")
+        q = question.lower().strip()
+        if any(w in q for w in ['calculate', 'compute', 'formula', 'sum', 'average', '+', '-', '*', '/', '=']):
             return "formula"
-        
-        # Report bot keywords
-        if any(word in question_lower for word in ['report', 'analyze', 'analysis', 'chart', 'graph', 'data', 'dashboard', 'visualize', 'show me data', 'statistics']):
-            logger.info("🚀 Fast route: report")
+        if any(w in q for w in ['report', 'analyze', 'chart', 'data', 'dashboard', 'visualize', 'statistics']):
             return "report"
-        
-        # Menu bot keywords
-        if any(word in question_lower for word in ['menu', 'navigate', 'where is', 'find screen', 'interface', 'how to access', 'location of']):
-            logger.info("🚀 Fast route: menu")
+        if any(w in q for w in ['menu', 'navigate', 'where is', 'find screen', 'interface', 'how to access']):
             return "menu"
-        
-        # Project bot keywords
-        if any(word in question_lower for word in ['project', 'project file', 'project report', 'project document']):
-            logger.info("🚀 Fast route: project")
+        if any(w in q for w in ['project', 'project file', 'project report', 'project document']):
             return "project"
-        
-        # Check exact query cache
-        if question_lower in self.intent_cache:
-            cached = self.intent_cache[question_lower]
-            logger.info(f"🚀 Cache hit: {cached}")
-            return cached
-        
+        if q in self.intent_cache:
+            return self.intent_cache[q]
         return None
-    
+
     async def detect_intent_with_ai(self, question: str, context: str) -> str:
-        """Optimized intent detection with caching and fast routing"""
+        cached_intent = self._get_cached_intent(question)
+        if cached_intent:
+            return cached_intent
+        if not self.routing_llm:
+            return "general"
+        prompt = f"Route this query to ONE bot: general, formula, report, menu, project.\nQuery: {question}\nBot (one word):"
         try:
-            # Try fast routing first
-            cached_intent = self._get_cached_intent(question)
-            if cached_intent:
-                return cached_intent
-            
-            # Simplified prompt for faster processing
-            prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(question=question)
-            
-            # Use faster routing LLM with strict timeout
-            response = await asyncio.wait_for(
-                self.routing_llm.ainvoke(prompt),
-                timeout=5.0
-            )
-            
-            intent = response.content.strip().lower()
-            
-            # Validate intent
-            valid_intents = ["general", "formula", "report", "menu", "project"]
-            if intent not in valid_intents:
-                logger.warning(f"⚠️ Invalid AI intent '{intent}', defaulting to general")
+            resp = await asyncio.wait_for(self.routing_llm.ainvoke(prompt), timeout=4.0)
+            intent = getattr(resp, "content", str(resp)).strip().lower()
+            valid = ["general", "formula", "report", "menu", "project"]
+            if intent not in valid:
                 intent = "general"
-            
-            # Cache the result
             self.intent_cache[question.lower().strip()] = intent
-            logger.info(f"✅ AI routed to: {intent}")
             return intent
-            
-        except asyncio.TimeoutError:
-            logger.error("⏱️ Intent detection timeout (5s), using fallback")
-            fallback = self._get_cached_intent(question) or "general"
-            logger.info(f"📍 Fallback route: {fallback}")
-            return fallback
         except Exception as e:
-            logger.error(f"❌ Intent detection error: {e}")
-            fallback = self._get_cached_intent(question) or "general"
-            logger.info(f"📍 Error fallback route: {fallback}")
-            return fallback
-    
+            logger.warning("Intent detection fallback: %s", e)
+            return self._get_cached_intent(question) or "general"
+
     async def generate_out_of_scope_response(self, question: str, user_role: str) -> str:
-        """Generate brief out-of-scope response"""
+        if not self.response_llm:
+            return "I'm your GoodBooks ERP assistant. I can help with GoodBooks-related questions. I don't have information about that topic."
+        prompt = f"You are a GoodBooks ERP assistant ({user_role}). Politely decline if outside scope.\nQuestion: {question}\nResponse:"
         try:
-            prompt = OUT_OF_SCOPE_SYSTEM_PROMPT.format(
-                role=user_role,
-                question=question
-            )
-            
-            response = await asyncio.wait_for(
-                self.response_llm.ainvoke(prompt),
-                timeout=8.0
-            )
-            
-            return response.content.strip()
-            
-        except asyncio.TimeoutError:
-            logger.warning("⏱️ Out-of-scope response timeout")
-            return f"I'm your GoodBooks ERP assistant. I can help you with information about our ERP system, but I don't have information about that topic. What would you like to know about GoodBooks?"
-        except Exception as e:
-            logger.error(f"❌ Out-of-scope response error: {e}")
-            return f"I'm your GoodBooks ERP assistant. I can help you with information about our ERP system. What would you like to know?"
-    
+            resp = await asyncio.wait_for(self.response_llm.ainvoke(prompt), timeout=6.0)
+            return getattr(resp, "content", str(resp)).strip()
+        except Exception:
+            return "I'm your GoodBooks ERP assistant. I can help with GoodBooks system-related questions but not that topic."
+
     async def apply_role_perspective(self, answer: str, user_role: str, question: str) -> str:
-        """Conditionally apply role perspective - SKIP when not needed for speed"""
+        if len(answer) < 120:
+            return answer
+        if not self.response_llm:
+            return answer
+        role_personality = {
+            "developer": "Answer briefly but with technical details and code examples when relevant.",
+            "implementation": "Answer as a step-by-step implementer.",
+            "marketing": "Answer emphasizing business value and ROI.",
+            "client": "Answer in simple, non-technical language.",
+            "admin": "Answer with system administration focus."
+        }.get(user_role, "")
+        prompt = f"{role_personality}\nQuestion: {question}\nAnswer: {answer}\nRewrite briefly for role {user_role} (tone only):"
         try:
-            # Skip for very short answers
-            if len(answer) < 100:
-                logger.info("⚡ Skipping role adaptation - answer too short")
-                return answer
-            
-            # Skip for greetings
-            if any(word in answer.lower() for word in ['hello', 'hi', 'welcome', 'greetings']):
-                logger.info("⚡ Skipping role adaptation - greeting detected")
-                return answer
-            
-            # Check if answer already has role-appropriate language
-            role_indicators = {
-                "developer": ["API", "code", "function", "implementation", "endpoint", "database", "query", "method"],
-                "marketing": ["ROI", "benefit", "value", "advantage", "client", "business", "solution"],
-                "implementation": ["step", "configure", "setup", "deploy", "installation", "procedure"],
-                "client": ["easy", "simple", "help", "guide", "friendly", "straightforward"],
-                "admin": ["system", "configuration", "management", "administration"]
-            }
-            
-            if user_role in role_indicators:
-                answer_lower = answer.lower()
-                matching_terms = sum(1 for term in role_indicators[user_role] if term.lower() in answer_lower)
-                if matching_terms >= 2:
-                    logger.info(f"⚡ Skipping role adaptation - answer already has {matching_terms} {user_role} indicators")
-                    return answer
-            
-            # Only adapt if really needed
-            logger.info(f"🎭 Applying {user_role} perspective...")
-            
-            role_personality = ROLE_SYSTEM_PROMPTS.get(user_role, ROLE_SYSTEM_PROMPTS[UserRole.CLIENT])
-            
-            prompt = f"""{role_personality}
-
-Question: {question}
-Answer: {answer}
-
-Rewrite briefly for {user_role} perspective. Keep facts, change tone only:"""
-            
-            response = await asyncio.wait_for(
-                self.response_llm.ainvoke(prompt),
-                timeout=10.0
-            )
-            
-            role_adapted = response.content.strip()
-            
+            resp = await asyncio.wait_for(self.response_llm.ainvoke(prompt), timeout=8.0)
+            role_adapted = getattr(resp, "content", str(resp)).strip()
             if role_adapted and len(role_adapted) > 20:
-                logger.info("✅ Role perspective applied")
                 return role_adapted
-            
-            logger.warning("⚠️ Role adaptation produced short result, using original")
             return answer
-            
-        except asyncio.TimeoutError:
-            logger.warning("⏱️ Role adaptation timeout, using original answer")
+        except Exception:
             return answer
-        except Exception as e:
-            logger.error(f"❌ Role perspective error: {e}")
-            return answer
-    
-    async def process_request(self, username: str, user_role: str, question: str, 
-                            thread_id: str = None, is_existing_thread: bool = False) -> Dict[str, str]:
-        """Optimized request processing with parallel execution"""
-        
+
+    async def process_request(self, username: str, user_role: str, question: str,
+                              thread_id: str = None, is_existing_thread: bool = False) -> Dict[str, Any]:
         start_time = time.time()
-        
-        # Non-blocking session update
-        asyncio.create_task(asyncio.to_thread(update_user_session, username))
-        
-        # INSTANT greeting response (no LLM call)
+        try:
+            asyncio.create_task(asyncio.to_thread(update_user_session, username))
+        except Exception:
+            pass
+
         if is_greeting(question):
-            logger.info(f"⚡ INSTANT greeting response (0.0s)")
             greeting_response = get_greeting_response(user_role)
-            
-            # Store memory in background (non-blocking)
-            asyncio.create_task(
-                asyncio.to_thread(
+            try:
+                asyncio.create_task(asyncio.to_thread(
                     enhanced_memory.store_conversation_turn,
                     username, question, greeting_response, "greeting", user_role, thread_id
-                )
-            )
-            
+                ))
+            except Exception:
+                pass
             if thread_id:
-                asyncio.create_task(
-                    asyncio.to_thread(
-                        history_manager.add_message_to_thread,
-                        thread_id, question, greeting_response, "greeting"
-                    )
-                )
-            
-            return {
-                "response": greeting_response,
-                "bot_type": "greeting",
-                "thread_id": thread_id,
-                "user_role": user_role
-            }
-        
-        # Build context (optimized - retrieve less)
+                try:
+                    asyncio.create_task(asyncio.to_thread(history_manager.add_message_to_thread,
+                                                         thread_id, question, greeting_response, "greeting"))
+                except Exception:
+                    pass
+            return {"response": greeting_response, "bot_type": "greeting", "thread_id": thread_id, "user_role": user_role}
+
         if is_existing_thread and thread_id:
-            recent_memories = enhanced_memory.retrieve_contextual_memories(
-                username, question, k=2, thread_id=thread_id, thread_isolation=True
-            )
+            recent_memories = enhanced_memory.retrieve_contextual_memories(username, question, k=2, thread_id=thread_id, thread_isolation=True)
             context = build_conversational_context(username, question, thread_id, thread_isolation=True)
         else:
-            recent_memories = enhanced_memory.retrieve_contextual_memories(
-                username, question, k=2, thread_id=thread_id, thread_isolation=False
-            )
+            recent_memories = enhanced_memory.retrieve_contextual_memories(username, question, k=2, thread_id=thread_id, thread_isolation=False)
             context = build_conversational_context(username, question, thread_id, thread_isolation=False)
-        
-        logger.info(f"🔄 Processing for {username} (Role: {user_role})")
-        
-        # Fast intent detection
+
         intent = await self.detect_intent_with_ai(question, context)
-        logger.info(f"🎯 Selected bot: {intent}")
-        
-        # Get bot and execute with timeout
-        selected_bot = self.bots.get(intent, self.bots["general"])
-        
-        try:
-            answer = await asyncio.wait_for(
-                selected_bot.answer(question, context, user_role),
-                timeout=30.0
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"⏱️ Bot {intent} execution timeout (30s)")
-            answer = None
-        except Exception as e:
-            logger.error(f"❌ Bot {intent} execution error: {e}")
-            answer = None
-        
-        # Handle out-of-scope or errors
-        if not answer or len(answer) < 10:
-            logger.info(f"❌ Question out of scope or error, generating refusal")
+        logger.info("Routing to bot: %s (question: %.60s)", intent, question)
+
+        bot_answer = await call_bot_via_http(intent, question, user_role, username, timeout=25.0)
+
+        if not bot_answer or len(str(bot_answer).strip()) < 6:
+            logger.info("Bot returned empty/short answer; generating fallback")
             answer = await self.generate_out_of_scope_response(question, user_role)
             bot_type = "out_of_scope"
         else:
-            # Conditional role adaptation (may skip for performance)
-            answer = await self.apply_role_perspective(answer, user_role, question)
+            answer = await self.apply_role_perspective(str(bot_answer), user_role, question)
             bot_type = intent
-        
-        # Store conversation in background (non-blocking)
-        asyncio.create_task(
-            asyncio.to_thread(
-                update_enhanced_memory,
-                username, question, answer, bot_type, user_role, thread_id
-            )
-        )
-        
+
+        try:
+            asyncio.create_task(asyncio.to_thread(update_enhanced_memory,
+                                                 username, question, answer, bot_type, user_role, thread_id))
+        except Exception:
+            pass
+
         elapsed = time.time() - start_time
-        logger.info(f"✅ Response completed in {elapsed:.2f}s (Bot: {bot_type})")
-        
-        return {
-            "response": answer,
-            "bot_type": bot_type,
-            "thread_id": thread_id,
-            "user_role": user_role
-        }
+        logger.info("Response completed in %.2fs (bot: %s)", elapsed, bot_type)
+        return {"response": answer, "bot_type": bot_type, "thread_id": thread_id, "user_role": user_role}
 
-
-# Initialize AI orchestrator
 ai_orchestrator = AIOrchestrationAgent()
 
-# ===========================
-# Helper Functions
-# ===========================
+# ---------------------------
+# Helper functions
+# ---------------------------
 def update_user_session(username: str):
-    """Update user session - now non-blocking"""
     try:
-        current_time = datetime.now().isoformat()
-        
+        now = datetime.now().isoformat()
+        if not db:
+            user_sessions[username] = {"last_activity": now, "session_count": 1}
+            return
         session_ref = db.collection('user_sessions').document(username)
-        session_doc = session_ref.get()
-
-        if not session_doc.exists:
-            user_session_data = {
-                "first_seen": current_time,
-                "last_activity": current_time,
-                "session_count": 1,
-                "total_interactions": 1
-            }
+        doc = session_ref.get()
+        if not doc.exists:
+            data = {"first_seen": now, "last_activity": now, "session_count": 1, "total_interactions": 1}
         else:
-            user_session_data = session_doc.to_dict()
-            user_session_data["last_activity"] = current_time
-            user_session_data["total_interactions"] = user_session_data.get("total_interactions", 0) + 1
-        
-        session_ref.set(user_session_data)
-        user_sessions[username] = user_session_data
+            data = doc.to_dict()
+            data["last_activity"] = now
+            data["total_interactions"] = data.get("total_interactions", 0) + 1
+        session_ref.set(data)
+        user_sessions[username] = data
     except Exception as e:
-        logger.error(f"Error saving user session: {e}")
-
+        logger.warning("Error saving user session: %s", e)
 
 def build_conversational_context(username: str, current_query: str, thread_id: str = None, thread_isolation: bool = False) -> str:
-    """Build context - optimized to reduce size"""
-    context_parts = []
-    
-    session_info = user_sessions.get(username, {})
-    if session_info:
-        context_parts.append(f"User: {username}")
-    
+    parts = []
+    sess = user_sessions.get(username, {})
+    if sess:
+        parts.append(f"User: {username}")
     if thread_isolation and thread_id:
         thread = history_manager.get_thread(thread_id)
         if thread and thread.messages:
-            context_parts.append(f"Thread: {thread.title}")
-            # Only get last 2 messages
-            recent_messages = thread.messages[-2:]
-            if recent_messages:
-                context_parts.append("Recent:")
-                for msg in recent_messages:
-                    context_parts.append(f"Q: {msg['user_message'][:80]}")
-                    context_parts.append(f"A: {msg['bot_response'][:80]}")
+            parts.append(f"Thread: {thread.title}")
+            recent = thread.messages[-2:]
+            parts.append("Recent:")
+            for m in recent:
+                parts.append(f"Q: {m['user_message'][:80]}")
+                parts.append(f"A: {m['bot_response'][:80]}")
     else:
         if thread_id:
             thread = history_manager.get_thread(thread_id)
             if thread and thread.messages:
-                # Only get last message
-                recent_messages = thread.messages[-1:]
-                if recent_messages:
-                    for msg in recent_messages:
-                        context_parts.append(f"Q: {msg['user_message'][:80]}")
-                        context_parts.append(f"A: {msg['bot_response'][:80]}")
-    
-    return "\n".join(context_parts)
-
+                recent = thread.messages[-1:]
+                for m in recent:
+                    parts.append(f"Q: {m['user_message'][:80]}")
+                    parts.append(f"A: {m['bot_response'][:80]}")
+    return "\n".join(parts)
 
 def update_enhanced_memory(username: str, question: str, answer: str, bot_type: str, user_role: str, thread_id: str = None):
-    """Update memory - runs in background thread"""
     try:
         if thread_id:
             history_manager.add_message_to_thread(thread_id, question, answer, bot_type)
-        
         enhanced_memory.store_conversation_turn(username, question, answer, bot_type, user_role, thread_id)
     except Exception as e:
-        logger.error(f"Error storing memory: {e}")
+        logger.warning("Error storing memory: %s", e)
 
-
-# ===========================
-# FASTAPI APP INITIALIZATION
-# ===========================
-app = FastAPI(title="GoodBooks AI-Powered Role-Based ERP Assistant - OPTIMIZED")
-
-# Add performance monitoring middleware
-app.add_middleware(PerformanceMonitoringMiddleware)
+# ---------------------------
+# FastAPI app
+# ---------------------------
+app = FastAPI(title="GoodBooks AI Orchestrator - FIXED")
 
 app.add_middleware(
     CORSMiddleware,
@@ -1043,441 +639,195 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===========================
-# Pydantic Models
-# ===========================
+class PerformanceMonitoringMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start = time.time()
+        response = await call_next(request)
+        proc = time.time() - start
+        response.headers["X-Process-Time"] = f"{proc:.2f}s"
+        if proc > 1.0:
+            logger.info("Request %s took %.2fs", request.url.path, proc)
+        return response
+
+app.add_middleware(PerformanceMonitoringMiddleware)
+
 class Message(BaseModel):
     content: str
-
 
 class ThreadRequest(BaseModel):
     thread_id: Optional[str] = None
     message: str
 
-
 class ThreadRenameRequest(BaseModel):
     thread_id: str
     new_title: str
 
-
-# ===========================
-# API ENDPOINTS
-# ===========================
 @app.post("/gbaiapi/chat", tags=["AI Role-Based Chat"])
 async def ai_role_based_chat(message: Message, Login: str = Header(...)):
-    """
-    AI-powered role-based chat - NEW CONVERSATION (OPTIMIZED)
-    User's role must be provided in Login header
-    """
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
         user_role = login_dto.get("Role", "client").lower()
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header. Must include UserName and Role"})
-    
-    # Validate role
     valid_roles = ["developer", "implementation", "marketing", "client", "admin"]
     if user_role not in valid_roles:
         return JSONResponse(status_code=400, content={"response": f"Invalid role. Must be one of: {', '.join(valid_roles)}"})
-    
     user_input = message.content.strip()
-    
     try:
-        # Create new thread (non-blocking)
         thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
-        
-        # Process with AI orchestrator
         result = await ai_orchestrator.process_request(username, user_role, user_input, thread_id)
-        
-        logger.info(f"✅ Response sent to {username} ({user_role})")
+        logger.info("Response sent to %s (%s)", username, user_role)
         return result
-        
     except Exception as e:
-        logger.error(f"❌ AI orchestration error: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        
-        error_response = "I encountered an error processing your request. Please try again."
-        return JSONResponse(
-            status_code=500,
-            content={"response": error_response, "bot_type": "error"}
-        )
-
+        logger.error("AI orchestration error: %s", e)
+        logger.error(traceback.format_exc())
+        return JSONResponse(status_code=500, content={"response": "I encountered an error processing your request.", "bot_type": "error"})
 
 @app.post("/gbaiapi/thread_chat", tags=["AI Thread Chat"])
 async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
-    """
-    Continue conversation in existing thread with AI role-based intelligence (OPTIMIZED)
-    """
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
         user_role = login_dto.get("Role", "client").lower()
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
-    
-    # Validate role
     valid_roles = ["developer", "implementation", "marketing", "client", "admin"]
     if user_role not in valid_roles:
-        return JSONResponse(status_code=400, content={"response": f"Invalid role. Must be one of: {', '.join(valid_roles)}"})
-    
+        return JSONResponse(status_code=400, content={"response": f"Invalid role"})
     thread_id = request.thread_id
     user_input = request.message.strip()
-    
-    # Verify thread
     if thread_id:
         thread = history_manager.get_thread(thread_id)
         if not thread or thread.username != username:
             return JSONResponse(status_code=404, content={"response": "Thread not found"})
     else:
         thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
-    
     try:
-        # Process with thread isolation
-        result = await ai_orchestrator.process_request(
-            username, user_role, user_input, thread_id, is_existing_thread=True
-        )
-        
-        logger.info(f"✅ Thread response sent to {username} ({user_role})")
+        result = await ai_orchestrator.process_request(username, user_role, user_input, thread_id, is_existing_thread=True)
+        logger.info("Thread response sent to %s (%s)", username, user_role)
         return result
-        
     except Exception as e:
-        logger.error(f"❌ Thread chat error: {str(e)}")
-        error_response = "I encountered an error. Please try again."
-        return JSONResponse(
-            status_code=500,
-            content={"response": error_response, "bot_type": "error", "thread_id": thread_id}
-        )
-
+        logger.error("Thread chat error: %s", e)
+        return JSONResponse(status_code=500, content={"response": "I encountered an error. Please try again.", "bot_type": "error", "thread_id": thread_id})
 
 @app.get("/gbaiapi/conversation_threads", tags=["Conversation History"])
 async def get_conversation_threads(Login: str = Header(...), limit: int = 50):
-    """Get user's conversation threads"""
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
         user_role = login_dto.get("Role", "client")
     except:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
-    
     threads = history_manager.get_user_threads(username, limit)
     session_info = user_sessions.get(username, {})
-    
-    return {
-        "username": username,
-        "user_role": user_role,
-        "session_info": session_info,
-        "threads": threads,
-        "total_threads": len(threads)
-    }
-
+    return {"username": username, "user_role": user_role, "session_info": session_info, "threads": threads, "total_threads": len(threads)}
 
 @app.get("/gbaiapi/thread/{thread_id}", tags=["Conversation History"])
 async def get_thread_details(thread_id: str, Login: str = Header(...)):
-    """Get thread details"""
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
     except:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
-    
     thread = history_manager.get_thread(thread_id)
-    
     if not thread or thread.username != username:
         return JSONResponse(status_code=404, content={"response": "Thread not found"})
-    
     return thread.to_dict()
-
 
 @app.delete("/gbaiapi/thread/{thread_id}", tags=["Conversation History"])
 async def delete_thread(thread_id: str, Login: str = Header(...)):
-    """Delete a thread"""
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
     except:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
-    
     success = history_manager.delete_thread(thread_id, username)
-    
     if success:
         return {"message": "Thread deleted successfully"}
     else:
         return JSONResponse(status_code=404, content={"response": "Thread not found"})
 
-
 @app.put("/gbaiapi/thread/{thread_id}/rename", tags=["Conversation History"])
 async def rename_thread(thread_id: str, request: ThreadRenameRequest, Login: str = Header(...)):
-    """Rename a thread"""
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
     except:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
-    
     success = history_manager.rename_thread(thread_id, username, request.new_title)
-    
     if success:
         return {"message": "Thread renamed successfully"}
     else:
         return JSONResponse(status_code=404, content={"response": "Thread not found"})
 
-
-@app.get("/gbaiapi/available_roles", tags=["Role Information"])
-async def get_available_roles():
-    """Get available user roles and their descriptions"""
-    return {
-        "available_roles": [
-            {
-                "role": "developer",
-                "display_name": "Developer",
-                "description": "Technical expert who understands code, APIs, and system architecture",
-                "response_style": "Technical, detailed, with code examples and implementation details"
-            },
-            {
-                "role": "implementation",
-                "display_name": "Implementation Consultant",
-                "description": "Team member who deploys and configures the system for clients",
-                "response_style": "Step-by-step instructions, configuration guidance, best practices"
-            },
-            {
-                "role": "marketing",
-                "display_name": "Marketing/Sales",
-                "description": "Team member focused on selling and promoting the solution",
-                "response_style": "Business benefits, ROI, competitive advantages, persuasive"
-            },
-            {
-                "role": "client",
-                "display_name": "Client/End User",
-                "description": "End user who uses the system for daily work",
-                "response_style": "Simple, friendly, non-technical, easy to understand"
-            },
-            {
-                "role": "admin",
-                "display_name": "System Administrator",
-                "description": "Administrator with full system access and knowledge",
-                "response_style": "Comprehensive, covering all technical and business aspects"
-            }
-        ],
-        "default_role": "client",
-        "note": "Role must be selected during login and passed in the Login header as 'Role' field"
-    }
-
-
 @app.get("/gbaiapi/system_status", tags=["System Health"])
 async def system_status():
-    """System health check"""
-    bot_status = {
-        "general": "available" if GENERAL_BOT_AVAILABLE else "unavailable",
-        "formula": "available" if FORMULA_BOT_AVAILABLE else "unavailable",
-        "report": "available" if REPORT_BOT_AVAILABLE else "unavailable",
-        "menu": "available" if MENU_BOT_AVAILABLE else "unavailable",
-        "project": "available" if PROJECT_BOT_AVAILABLE else "unavailable"
-    }
-    
+    bot_status = {k: "configured" if v else "missing" for k, v in BOT_ENDPOINTS.items()}
     memory_stats = {
         "total_users": len(chats_db),
         "total_sessions": len(user_sessions),
-        "total_conversations": sum(len(chats) for chats in chats_db.values()),
+        "total_conversations": sum(len(ch) for ch in chats_db.values()) if chats_db else 0,
         "total_memories": len(conversational_memory_metadata),
         "total_threads": len(history_manager.threads),
         "active_threads": len([t for t in history_manager.threads.values() if t.is_active])
     }
-    
-    return {
-        "status": "healthy",
-        "version": "7.0.0-ULTRA-OPTIMIZED",
-        "available_bots": [k for k, v in bot_status.items() if v == "available"],
-        "bot_status": bot_status,
-        "memory_system": memory_stats,
-        "features": [
-            "⚡ INSTANT greeting responses (<1s)",
-            "🚀 Keyword-based fast routing (70% queries)",
-            "🎯 AI intent detection with 5s timeout",
-            "🎭 Conditional role adaptation (skips when not needed)",
-            "⏱️ Strict timeouts on all LLM operations",
-            "🔄 Parallel/async processing throughout",
-            "💾 Background memory storage (non-blocking)",
-            "🧠 Reduced context size for speed",
-            "📊 Performance monitoring on all requests"
-        ],
-        "performance": {
-            "greeting_response": "<1 second",
-            "simple_query": "5-10 seconds",
-            "complex_query": "15-20 seconds",
-            "keyword_routing": "Instant (no LLM)",
-            "intent_detection_timeout": "5 seconds",
-            "bot_execution_timeout": "30 seconds",
-            "role_adaptation_timeout": "10 seconds"
-        },
-        "optimizations": [
-            "✅ Keyword-based fast routing",
-            "✅ Intent caching system",
-            "✅ Conditional role adaptation",
-            "✅ Parallel async execution",
-            "✅ Background memory storage",
-            "✅ Reduced token limits (num_predict)",
-            "✅ Smaller context windows",
-            "✅ Strict operation timeouts",
-            "✅ Non-blocking Firestore operations",
-            "✅ Reduced memory retrieval (k=2)",
-            "✅ Memory save frequency (every 20)"
-        ]
-    }
-
-
-@app.get("/gbaiapi/user_statistics", tags=["Analytics"])
-async def get_user_statistics(Login: str = Header(...)):
-    """Get user statistics"""
-    try:
-        login_dto = json.loads(Login)
-        username = login_dto.get("UserName", "anonymous")
-        user_role = login_dto.get("Role", "client")
-    except:
-        return JSONResponse(status_code=400, content={"response": "Invalid login header"})
-    
-    session_info = user_sessions.get(username, {})
-    user_chats = chats_db.get(username, [])
-    user_threads = history_manager.get_user_threads(username)
-    
-    bot_usage = {}
-    for chat in user_chats:
-        bot_type = chat.get('bot_type', 'unknown')
-        bot_usage[bot_type] = bot_usage.get(bot_type, 0) + 1
-    
-    now = datetime.now()
-    recent_activity = {"today": 0, "this_week": 0, "this_month": 0}
-    
-    for chat in user_chats:
-        try:
-            chat_time = datetime.fromisoformat(chat['timestamp'])
-            time_diff = now - chat_time
-            
-            if time_diff.days == 0:
-                recent_activity["today"] += 1
-            if time_diff.days <= 7:
-                recent_activity["this_week"] += 1
-            if time_diff.days <= 30:
-                recent_activity["this_month"] += 1
-        except:
-            continue
-    
-    return {
-        "username": username,
-        "user_role": user_role,
-        "session_info": session_info,
-        "statistics": {
-            "total_conversations": len(user_chats),
-            "total_threads": len(user_threads),
-            "active_threads": len([t for t in user_threads if t.get('is_active', True)]),
-            "bot_usage": bot_usage,
-            "recent_activity": recent_activity
-        }
-    }
-
+    return {"status": "healthy", "available_bots": list(BOT_ENDPOINTS.keys()), "bot_status": bot_status, "memory_system": memory_stats, "version": "7.0.0-FIXED"}
 
 @app.post("/gbaiapi/cleanup_old_data", tags=["System Maintenance"])
 async def cleanup_old_data(Login: str = Header(...), days_to_keep: int = 90):
-    """Cleanup old data (admin only)"""
     try:
         login_dto = json.loads(Login)
         user_role = login_dto.get("Role", "client")
-        
         if user_role != "admin":
             return JSONResponse(status_code=403, content={"response": "Admin access required"})
     except:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
-    
     try:
         await asyncio.to_thread(history_manager.cleanup_old_threads, days_to_keep)
-        
-        return {
-            "message": f"Cleaned up data older than {days_to_keep} days",
-            "cleanup_date": datetime.now().isoformat()
-        }
+        return {"message": f"Cleaned up data older than {days_to_keep} days", "cleanup_date": datetime.now().isoformat()}
     except Exception as e:
-        logger.error(f"Cleanup error: {e}")
+        logger.error("Cleanup error: %s", e)
         return JSONResponse(status_code=500, content={"response": "Cleanup failed"})
 
+@app.get("/gbaiapi/debug/endpoint_test", tags=["Debug"])
+async def endpoint_test():
+    results = {}
+    client = get_httpx_client()
+    for name, url in BOT_ENDPOINTS.items():
+        try:
+            health_url = url.replace("/gbaiapi", "/gbaiapi/health")
+            r = await client.get(health_url, timeout=5.0)
+            results[name] = {"url": url, "status": r.status_code, "ok": r.status_code == 200, "text": (r.text[:300] if r.text else "")}
+        except Exception as e:
+            results[name] = {"url": url, "error": str(e)}
+    return results
 
-@app.get("/gbaiapi/performance_stats", tags=["System Health"])
-async def get_performance_stats():
-    """Get performance statistics"""
-    return {
-        "cache_stats": {
-            "intent_cache_size": len(ai_orchestrator.intent_cache),
-            "cached_intents": list(ai_orchestrator.intent_cache.keys())[:10]
-        },
-        "optimization_status": {
-            "keyword_routing": "enabled",
-            "intent_caching": "enabled",
-            "conditional_role_adaptation": "enabled",
-            "background_memory_storage": "enabled",
-            "async_processing": "enabled"
-        },
-        "timeout_configuration": {
-            "greeting_detection": "instant",
-            "intent_detection": "5 seconds",
-            "bot_execution": "30 seconds",
-            "role_adaptation": "10 seconds",
-            "out_of_scope_generation": "8 seconds"
-        }
-    }
-
-
-# ===========================
-# STARTUP/SHUTDOWN EVENTS
-# ===========================
 @app.on_event("startup")
 async def startup_event():
-    logger.info("="*70)
-    logger.info("🚀 GoodBooks AI-Powered Role-Based ERP Assistant")
-    logger.info("="*70)
-    logger.info("✨ ULTRA-OPTIMIZED VERSION 7.0.0")
-    logger.info("="*70)
-    logger.info("⚡ Performance Features:")
-    logger.info("  • Instant greeting responses (<1s)")
-    logger.info("  • Keyword-based fast routing (no LLM for 70% queries)")
-    logger.info("  • Intent caching system")
-    logger.info("  • Conditional role adaptation (skips when not needed)")
-    logger.info("  • Strict timeouts on all operations")
-    logger.info("  • Parallel/async processing")
-    logger.info("  • Background memory storage")
-    logger.info("="*70)
-    logger.info("🎯 Expected Response Times:")
-    logger.info("  • Greetings: <1 second")
-    logger.info("  • Simple queries: 5-10 seconds")
-    logger.info("  • Complex queries: 15-20 seconds")
-    logger.info("="*70)
-
-    try:
-        # Warm up the model
-        logger.info("🔥 Warming up Ollama model...")
-        await ai_orchestrator.routing_llm.ainvoke("test")
-        logger.info("✅ Model warmed up")
-        
-        # Cleanup old threads
-        await asyncio.to_thread(history_manager.cleanup_old_threads, 180)
-        logger.info("✅ Startup cleanup completed")
-    except Exception as e:
-        logger.error(f"❌ Startup tasks failed: {e}")
-
+    logger.info("Starting GoodBooks Orchestrator (fixed)...")
+    if ai_orchestrator.routing_llm:
+        try:
+            asyncio.create_task(ai_orchestrator.routing_llm.ainvoke("ping"))
+        except Exception as e:
+            logger.warning("Routing LLM warmup scheduled but failed: %s", e)
+    get_httpx_client()
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("🛑 Shutting down...")
+    logger.info("Shutting down orchestrator...")
     try:
-        await asyncio.to_thread(history_manager.save_threads)
-        logger.info("✅ All thread data saved to Firestore.")
+        if _httpx_client:
+            await _httpx_client.aclose()
+    except Exception:
+        pass
+    try:
+        history_manager.save_threads()
     except Exception as e:
-        logger.error(f"❌ Shutdown save error: {e}")
+        logger.warning("Failed saving threads at shutdown: %s", e)
 
-
-# ===========================
-# MAIN ENTRY POINT
-# ===========================
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8010))
-    logger.info(f"🚀 Starting ULTRA-OPTIMIZED server on port {port}")
+    logger.info(f"Starting orchestrator on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
