@@ -1,15 +1,16 @@
-version: '3.8'
+version: "3.8"
 
 services:
-  # Your FastAPI Application Service
+  # -----------------------------
+  # FastAPI Application
+  # -----------------------------
   app:
     build: .
-    image: goodbooksunisoft/goodbooks-chatbot:latest # 🚨 CHANGE THIS!
+    image: goodbooksunisoft/goodbooks-chatbot:latest
     container_name: goodbooks_chatbot_app
     ports:
       - "8010:8010"
     volumes:
-      # This saves your app's data on the server, so it's not lost on restart
       - ./data:/app/data
       - ./data/conversational_memory_vectorstore:/app/conversational_memory_vectorstore
       - ./data/conversational_memory_metadata.json:/app/conversational_memory_metadata.json
@@ -18,18 +19,38 @@ services:
       - ./data/role_context_mapping.json:/app/role_context_mapping.json
       - ./data/chats.json:/app/chats.json
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     restart: always
 
-  # Ollama Service for the gemma:2b model
+  # -----------------------------
+  # Ollama (GPU + Keep Alive)
+  # -----------------------------
   ollama:
     image: ollama/ollama
     container_name: ollama_service
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h   # 🔥 KEEP MODEL HOT
     volumes:
-      # This saves the downloaded models on your server
       - ollama_data:/root/.ollama
-    restart: always
     ports:
-      - "11434:11434"  # Ollama API port
+      - "11434:11434"
+    restart: always
+
+    # ✅ GPU ACCESS (REQUIRED)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+
+    # ✅ HEALTHCHECK (IMPORTANT)
+    healthcheck:
+      test: ["CMD", "ollama", "ps"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   ollama_data:

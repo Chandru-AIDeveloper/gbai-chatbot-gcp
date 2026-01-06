@@ -1759,62 +1759,78 @@ async def health_check():
 # ===========================
 @app.on_event("startup")
 async def startup_event():
-    logger.info("="*80)
-    logger.info("🚀 GoodBooks AI-Powered Role-Based ERP Assistant")
-    logger.info("="*80)
-    logger.info("✨ FIXED & ENHANCED VERSION 8.0.0")
-    logger.info("="*80)
-    logger.info("⚡ Performance Features:")
-    logger.info("  • Instant greeting responses (<1s)")
-    logger.info("  • Enhanced keyword-based fast routing with math detection")
-    logger.info("  • Improved AI intent detection (10s timeout)")
-    logger.info("  • Comprehensive fallback chain (Primary → General → Out-of-scope)")
-    logger.info("  • Smart role adaptation (only when needed)")
-    logger.info("  • Increased timeouts for stability")
-    logger.info("  • Enhanced logging throughout pipeline")
-    logger.info("  • Question structure analysis for intelligent fallbacks")
-    logger.info("="*80)
-    logger.info("🎯 Expected Response Times:")
-    logger.info("  • Greetings: <1 second")
-    logger.info("  • Simple queries (keyword route): 5-10 seconds")
-    logger.info("  • Simple queries (AI route): 10-15 seconds")
-    logger.info("  • Complex queries: 20-30 seconds")
-    logger.info("="*80)
-    logger.info("🔧 Improvements:")
-    logger.info("  • ✅ Enhanced keyword detection")
-    logger.info("  • ✅ Better AI routing prompts")
-    logger.info("  • ✅ Comprehensive error handling")
-    logger.info("  • ✅ Fallback chain implementation")
-    logger.info("  • ✅ Smart role adaptation")
-    logger.info("  • ✅ Detailed logging at every step")
-    logger.info("  • ✅ Debug endpoints for testing")
-    logger.info("="*80)
-    logger.info("🤖 Available Bots:")
-    bot_status = {
-        "general": "✅" if GENERAL_BOT_AVAILABLE else "❌",
-        "formula": "✅" if FORMULA_BOT_AVAILABLE else "❌",
-        "report": "✅" if REPORT_BOT_AVAILABLE else "❌",
-        "menu": "✅" if MENU_BOT_AVAILABLE else "❌",
-        "project": "✅" if PROJECT_BOT_AVAILABLE else "❌"
-    }
-    for bot, status in bot_status.items():
-        logger.info(f"  {status} {bot}")
-    logger.info("="*80)
+    logger.info("=" * 80)
+    logger.info("🚀 GoodBooks AI Orchestrator starting")
+    logger.info("=" * 80)
 
     try:
-        logger.info("🔥 Warming up Ollama model...")
-        await ai_orchestrator.routing_llm.ainvoke("test")
-        logger.info("✅ Model warmed up successfully")
-        
-        await asyncio.to_thread(history_manager.cleanup_old_threads, 180)
-        logger.info("✅ Startup cleanup completed")
-    except Exception as e:
-        logger.error(f"⚠️ Startup tasks warning: {e}")
-    
-    logger.info("="*80)
-    logger.info("🎉 Server ready to accept requests!")
-    logger.info("="*80)
+        # --------------------------------------------------
+        # 🔥 WARM OLLAMA MODELS (GPU LOAD)
+        # --------------------------------------------------
+        logger.info("🔥 Warming routing model...")
+        await ai_orchestrator.routing_llm.ainvoke("hello")
 
+        logger.info("🔥 Warming response model...")
+        await ai_orchestrator.response_llm.ainvoke("Reply OK")
+
+        logger.info("✅ Ollama models warmed")
+
+        # --------------------------------------------------
+        # 📦 FORCE FAISS INTO MEMORY
+        # --------------------------------------------------
+        logger.info("📦 Loading FAISS vectorstore...")
+        _ = enhanced_memory.memory_vectorstore
+        enhanced_memory.memory_vectorstore.similarity_search("warmup", k=1)
+        logger.info("✅ FAISS ready")
+
+        # --------------------------------------------------
+        # 🧪 REAL QUERY DRY RUN (MOST IMPORTANT)
+        # --------------------------------------------------
+        logger.info("🧪 Running real-query warmup...")
+
+        await ai_orchestrator.process_request(
+            username="__warmup__",
+            user_role="client",
+            question="What is GoodBooks ERP?",
+            thread_id=None,
+            is_existing_thread=False
+        )
+
+        logger.info("✅ Real-query warmup completed")
+
+        # --------------------------------------------------
+        # 🤖 PRE-WARM SUB BOTS (SAFE)
+        # --------------------------------------------------
+        async def warm_bot(bot, name):
+            try:
+                await asyncio.wait_for(
+                    bot.answer("test", "", "client"),
+                    timeout=5
+                )
+                logger.info(f"🔥 {name} bot warmed")
+            except Exception:
+                logger.warning(f"⚠️ {name} bot warm skipped")
+
+        await warm_bot(GeneralBotWrapper(), "general")
+        await warm_bot(FormulaBot(), "formula")
+        await warm_bot(ReportBot(), "report")
+        await warm_bot(MenuBot(), "menu")
+        await warm_bot(ProjectBot(), "project")
+
+        # --------------------------------------------------
+        # 🧹 BACKGROUND CLEANUP
+        # --------------------------------------------------
+        asyncio.create_task(
+            asyncio.to_thread(history_manager.cleanup_old_threads, 180)
+        )
+
+    except Exception as e:
+        logger.error(f"⚠️ Startup warmup error: {e}")
+
+    logger.info("=" * 80)
+    logger.info("🎉 Server READY — no cold start expected")
+    logger.info("=" * 80)
+    
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("="*80)
@@ -1845,3 +1861,4 @@ if __name__ == "__main__":
     logger.info(f"🚀 Starting FIXED & ENHANCED server on port {port}")
     logger.info("="*80)
     uvicorn.run(app, host="0.0.0.0", port=port)
+    
