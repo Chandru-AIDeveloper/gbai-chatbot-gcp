@@ -54,7 +54,7 @@ app.add_middleware(
 llm = ChatOllama(
     model="gemma:2b",
     base_url="http://localhost:11434",
-    temperature=0.3
+    temperature=0.2
 )
  
 def load_csv_as_document(file_path: str) -> List[Document]:
@@ -129,7 +129,7 @@ if all_docs:
    
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vectorstore = FAISS.from_documents(text_chunks, embeddings)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 50})
     logger.info("✅ FAISS vectorstore and retriever initialized.")
 else:
     logger.warning("⚠️ No documents loaded. RAG will not be available.")
@@ -138,42 +138,55 @@ else:
 prompt_template = """
 [ROLE]
 You are an expert Menu assistant for GoodBooks Technologies.
+You act as a continuous, context-aware assistant within an ongoing conversation.
 
 [TASK]
-Answer user questions related to Menu in a natural and conversational way.
+Answer user questions related to the GoodBooks Menu clearly, naturally, and professionally,
+while maintaining continuity with previous messages.
+
+[CONTEXT CONTINUITY RULES]
+- Treat the conversation as ongoing, not isolated
+- Use conversation history and orchestrator context to resolve references like
+  "this", "that", "same menu", or "previous option"
+- Do not repeat information unless it adds value
+- Maintain consistent terminology throughout the conversation
 
 [ORCHESTRATOR CONTEXT]
-Conversation context from current session:
+Conversation context from the current session:
 {orchestrator_context}
 
-[CONTEXT]
-Use the Menu context provided below to find the answer:
+[MENU CONTEXT]
+Use the Menu information below as the primary source of truth:
 {context}
 
 [CONVERSATION HISTORY]
+Previous messages in this conversation:
 {history}
 
-[REASONING]
-- Check the orchestrator context for any relevant prior discussion
-- Analyze the given Menu context carefully.
-- If the answer exists in the context, summarize it clearly.
-- If the answer is missing, do not invent information.
-- Maintain continuity with previous conversation
+[REASONING GUIDELINES]
+- First, understand the user's intent using the orchestrator context and conversation history
+- Carefully analyze the provided Menu context
+- If the answer exists, summarize it clearly and conversationally
+- If the answer is partially available, respond only with supported information
+- Never assume or invent missing Menu details
 
-[OUTPUT]
-Provide a clear, concise, and professional answer in natural language that maintains conversational continuity.
+[OUTPUT GUIDELINES]
+- Provide a clear, concise, and professional response
+- Maintain natural conversational flow
+- Keep the answer focused on Menu-related information
+- Avoid unnecessary repetition
 
-[CONDITIONS]
-- If the context does not contain the answer, reply only with:
-  "I don't know. Please try asking a different Menu-related question."
-- Never hallucinate or add extra unrelated details.
+[FAIL-SAFE CONDITION]
+If the Menu context does not contain the required information,
+respond exactly with:
+"I don't know. Please try asking a different Menu-related question."
 
 [USER QUESTION]
 {question}
 
+Response:
+"""
 
-Response:"""
- 
 prompt = ChatPromptTemplate.from_template(prompt_template)
  
 if retriever:

@@ -19,6 +19,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from google.cloud import firestore
 from google.cloud import storage
+from concurrent.futures import ThreadPoolExecutor
 
 # Import bot modules
 try:
@@ -72,6 +73,15 @@ storage_client = storage.Client(project=GCP_PROJECT_ID)
 bucket = storage_client.bucket(GCS_BUCKET_NAME)
 
 logger.info(f"Connected to GCP Project: {GCP_PROJECT_ID}, Bucket: {GCS_BUCKET_NAME}")
+
+# ===========================
+# EXECUTOR (FOR BLOCKING I/O ONLY)
+# ===========================
+EXECUTOR = ThreadPoolExecutor(max_workers=4)
+
+def run_bg(func, *args):
+    """Helper to run blocking I/O in thread pool"""
+    return asyncio.to_thread(func, *args)
 
 class UserRole:
     DEVELOPER = "developer"
@@ -557,7 +567,7 @@ class EnhancedMessage:
     """Enhanced message object that includes conversation context"""
     def __init__(self, content: str, context: str = ""):
         self.content = content
-        self.context = context  # Pass conversation context to sub-bots
+        self.context = context
 
 class GeneralBotWrapper:
     @staticmethod
@@ -569,7 +579,6 @@ class GeneralBotWrapper:
             logger.info(f"📞 Calling general_bot with question: {question[:100]}")
             logger.info(f"📚 Passing context: {len(context)} chars")
             
-            # Create enhanced message with context
             message = EnhancedMessage(question, context)
             login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
             
@@ -584,7 +593,6 @@ class GeneralBotWrapper:
             else:
                 response = str(result) if result else None
             
-            # Validate response quality
             if response:
                 response_lower = response.lower()
                 refusal_patterns = [
@@ -803,16 +811,12 @@ class ProjectBot:
             return None
 
 # ===========================
-# UPDATED build_conversational_context FUNCTION
+# build_conversational_context FUNCTION
 # ===========================
 def build_conversational_context(username: str, current_query: str, thread_id: str = None, thread_isolation: bool = False) -> str:
-    """
-    Build rich conversational context for sub-bots
-    This creates the SHORT-TERM MEMORY that gets passed to bots
-    """
+    """Build rich conversational context for sub-bots"""
     context_parts = []
     
-    # Add user info
     session_info = user_sessions.get(username, {})
     if session_info:
         context_parts.append(f"User: {username}")
@@ -821,18 +825,15 @@ def build_conversational_context(username: str, current_query: str, thread_id: s
             context_parts.append(f"(Returning user with {total_interactions} previous interactions)")
         context_parts.append("")
     
-    # Add thread conversation history
     if thread_id:
         thread = history_manager.get_thread(thread_id)
         if thread and thread.messages:
             if thread_isolation:
-                # Thread isolation: Only include current thread messages
                 context_parts.append(f"=== Current Conversation Thread: {thread.title} ===")
-                recent_messages = thread.messages[-5:]  # Last 5 messages for context
+                recent_messages = thread.messages[-5:]
             else:
-                # No isolation: Include recent thread messages
                 context_parts.append(f"=== Recent Conversation ===")
-                recent_messages = thread.messages[-3:]  # Last 3 messages
+                recent_messages = thread.messages[-3:]
             
             if recent_messages:
                 for i, msg in enumerate(recent_messages, 1):
@@ -841,7 +842,6 @@ def build_conversational_context(username: str, current_query: str, thread_id: s
                     context_parts.append(f"Assistant ({msg['bot_type']}): {msg['bot_response'][:200]}")
                 context_parts.append("")
     
-    # Add retrieved memories from vector memory
     memories = enhanced_memory.retrieve_contextual_memories(
         username, current_query, k=2, thread_id=thread_id, thread_isolation=thread_isolation
     )
@@ -868,11 +868,10 @@ def build_conversational_context(username: str, current_query: str, thread_id: s
 # ===========================
 class AIOrchestrationAgent:
     def __init__(self):
-        # Optimized LLM for routing
         self.routing_llm = ChatOllama(
             model="gemma:2b", 
             base_url="http://localhost:11434", 
-            temperature=0,
+            temperature=0.2,
             num_predict=15,
             num_ctx=1024,
             repeat_penalty=1.1,
@@ -880,11 +879,10 @@ class AIOrchestrationAgent:
             top_p=0.8
         )
         
-        # Separate LLM for response generation
         self.response_llm = ChatOllama(
             model="gemma:2b",
             base_url="http://localhost:11434",
-            temperature=0.3,
+            temperature=0.2,
             num_predict=512,
             num_ctx=2048,
             repeat_penalty=1.1,
@@ -900,21 +898,19 @@ class AIOrchestrationAgent:
             "project": ProjectBot()
         }
         
-        # Intent cache for faster routing
         self.intent_cache = {}
     
     def _get_cached_intent(self, question: str) -> Optional[str]:
         """Enhanced keyword-based routing with broader patterns"""
         question_lower = question.lower().strip()
         
-        # Formula bot keywords - EXPANDED
+        # Formula bot keywords
         formula_keywords = [
             'calculate', 'compute', 'formula', 'math', 'sum', 'average', 'total', 
             'count', 'percentage', 'divide', 'multiply', 'subtract', 'add',
             'equation', 'expression', 'result of', 'what is', 'how much',
             '+', '-', '*', '/', '=', '%', 'mean', 'median'
         ]
-        # Check for math patterns
         has_numbers = any(char.isdigit() for char in question_lower)
         has_math_ops = any(op in question_lower for op in ['+', '-', '*', '/', '=', '%'])
         has_formula_keyword = any(word in question_lower for word in formula_keywords)
@@ -923,7 +919,7 @@ class AIOrchestrationAgent:
             logger.info("🚀 Fast route: formula")
             return "formula"
         
-        # Report bot keywords - EXPANDED
+        # Report bot keywords
         report_keywords = [
             'report', 'analyze', 'analysis', 'chart', 'graph', 'data', 
             'dashboard', 'visualize', 'show me data', 'statistics', 'stats',
@@ -935,7 +931,7 @@ class AIOrchestrationAgent:
             logger.info("🚀 Fast route: report")
             return "report"
         
-        # Menu bot keywords - EXPANDED
+        # Menu bot keywords
         menu_keywords = [
             'menu', 'navigate', 'where is', 'find screen', 'interface', 
             'how to access', 'location of', 'where can i', 'how do i find',
@@ -947,7 +943,7 @@ class AIOrchestrationAgent:
             logger.info("🚀 Fast route: menu")
             return "menu"
         
-        # Project bot keywords - EXPANDED
+        # Project bot keywords
         project_keywords = [
             'project', 'project file', 'project report', 'project document',
             'project status', 'project management', 'task', 'milestone',
@@ -957,7 +953,6 @@ class AIOrchestrationAgent:
             logger.info("🚀 Fast route: project")
             return "project"
         
-        # Check exact query cache
         if question_lower in self.intent_cache:
             cached = self.intent_cache[question_lower]
             logger.info(f"🚀 Cache hit: {cached}")
@@ -968,17 +963,14 @@ class AIOrchestrationAgent:
     async def detect_intent_with_ai(self, question: str, context: str) -> str:
         """Enhanced intent detection with better fallback logic"""
         try:
-            # Try fast routing first
             cached_intent = self._get_cached_intent(question)
             if cached_intent:
                 return cached_intent
             
-            # Enhanced routing prompt
             prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(question=question)
             
             logger.info(f"🤖 Using AI to route: {question[:80]}")
             
-            # Use faster routing LLM with timeout
             response = await asyncio.wait_for(
                 self.routing_llm.ainvoke(prompt),
                 timeout=10.0
@@ -987,19 +979,15 @@ class AIOrchestrationAgent:
             intent = response.content.strip().lower()
             logger.info(f"🎯 AI raw response: {intent}")
             
-            # More flexible validation - extract first valid word
             valid_intents = ["general", "formula", "report", "menu", "project"]
             
-            # Try to find valid intent in response
             for valid_intent in valid_intents:
                 if valid_intent in intent:
                     intent = valid_intent
                     break
             
-            # Final validation
             if intent not in valid_intents:
                 logger.warning(f"⚠️ Invalid AI intent '{intent}', analyzing question structure")
-                # Intelligent fallback based on question structure
                 if has_numbers := any(char.isdigit() for char in question):
                     intent = "formula"
                 elif any(word in question.lower() for word in ['what', 'who', 'tell me', 'explain', 'describe']):
@@ -1012,17 +1000,14 @@ class AIOrchestrationAgent:
                     intent = "general"
                 logger.info(f"📊 Fallback analysis selected: {intent}")
             
-            # Cache the result
             self.intent_cache[question.lower().strip()] = intent
             logger.info(f"✅ Final routing decision: {intent}")
             return intent
             
         except asyncio.TimeoutError:
             logger.error("⏱️ Intent detection timeout (10s), using intelligent fallback")
-            # Try keyword fallback again
             fallback = self._get_cached_intent(question)
             if not fallback:
-                # Analyze question structure for better fallback
                 question_lower = question.lower()
                 if any(char.isdigit() for char in question):
                     fallback = "formula"
@@ -1068,26 +1053,22 @@ class AIOrchestrationAgent:
             return f"I'm here to help with GoodBooks ERP. What would you like to know about our system?"
     
     async def apply_role_perspective(self, answer: str, user_role: str, question: str) -> str:
-        """Improved role adaptation - only skip obvious cases"""
+        """Improved role adaptation"""
         try:
-            # Only skip for greetings
             greeting_words = ['hello', 'hi there', 'welcome', 'greetings', "i'm here to help"]
             if any(word in answer.lower() for word in greeting_words) and len(answer) < 200:
                 logger.info("⚡ Skipping role adaptation - greeting detected")
                 return answer
             
-            # Skip if answer is an error message
             error_phrases = ['error', 'try again', 'something went wrong', "couldn't", "unable to"]
             if any(phrase in answer.lower() for phrase in error_phrases):
                 logger.info("⚡ Skipping role adaptation - error message")
                 return answer
             
-            # Skip very short answers
             if len(answer.strip()) < 30:
                 logger.info("⚡ Skipping role adaptation - answer too short")
                 return answer
             
-            # Apply role perspective for substantive answers
             logger.info(f"🎭 Applying {user_role} perspective to answer...")
             
             role_personality = ROLE_SYSTEM_PROMPTS.get(user_role, ROLE_SYSTEM_PROMPTS[UserRole.CLIENT])
@@ -1131,13 +1112,11 @@ Rewritten Answer:"""
         start_time = time.time()
         logger.info("="*80)
         logger.info(f"🚀 NEW REQUEST from {username} (Role: {user_role})")
-        logger.info(f"📝 Question: {question}")
+        logger.info(f"💬 Question: {question}")
         logger.info("="*80)
         
-        # Non-blocking session update
         asyncio.create_task(asyncio.to_thread(update_user_session, username))
         
-        # INSTANT greeting response
         if is_greeting(question):
             logger.info(f"⚡ INSTANT greeting response (0.0s)")
             greeting_response = get_greeting_response(user_role)
@@ -1164,7 +1143,6 @@ Rewritten Answer:"""
                 "user_role": user_role
             }
         
-        # Build context
         logger.info("📚 Building conversational context...")
         if is_existing_thread and thread_id:
             recent_memories = enhanced_memory.retrieve_contextual_memories(
@@ -1179,12 +1157,10 @@ Rewritten Answer:"""
         
         logger.info(f"📚 Retrieved {len(recent_memories)} contextual memories")
         
-        # Enhanced intent detection
         logger.info("🎯 Detecting intent...")
         intent = await self.detect_intent_with_ai(question, context)
         logger.info(f"🎯 INTENT SELECTED: {intent}")
         
-        # Try primary bot with comprehensive error handling
         selected_bot = self.bots.get(intent, self.bots["general"])
         answer = None
         bot_type = intent
@@ -1203,7 +1179,6 @@ Rewritten Answer:"""
             logger.error(f"❌ Bot {intent} execution error: {e}", exc_info=True)
             answer = None
         
-        # FALLBACK CHAIN: If primary bot fails, try general bot
         if not answer or len(answer.strip()) < 10:
             logger.warning(f"⚠️ Primary bot '{intent}' returned insufficient answer (len={len(answer) if answer else 0})")
             
@@ -1227,17 +1202,14 @@ Rewritten Answer:"""
                     logger.error(f"❌ General bot fallback error: {e}", exc_info=True)
                     answer = None
         
-        # If still no answer, generate out-of-scope response
         if not answer or len(answer.strip()) < 10:
             logger.info(f"🚫 No valid answer from any bot, generating out-of-scope response")
             answer = await self.generate_out_of_scope_response(question, user_role)
             bot_type = "out_of_scope"
         else:
-            # Apply role perspective to valid answers
             logger.info(f"🎭 Preparing to apply role perspective...")
             answer = await self.apply_role_perspective(answer, user_role, question)
         
-        # Store conversation in background
         logger.info("💾 Storing conversation in background...")
         asyncio.create_task(
             asyncio.to_thread(
@@ -1250,7 +1222,7 @@ Rewritten Answer:"""
         logger.info("="*80)
         logger.info(f"✅ REQUEST COMPLETED in {elapsed:.2f}s")
         logger.info(f"🤖 Bot Type: {bot_type}")
-        logger.info(f"📝 Response Length: {len(answer)} chars")
+        logger.info(f"📏 Response Length: {len(answer)} chars")
         logger.info(f"👤 User Role: {user_role}")
         logger.info("="*80)
         
@@ -1261,8 +1233,6 @@ Rewritten Answer:"""
             "user_role": user_role
         }
 
-
-# Initialize AI orchestrator
 ai_orchestrator = AIOrchestrationAgent()
 
 # ===========================
@@ -1293,39 +1263,6 @@ def update_user_session(username: str):
     except Exception as e:
         logger.error(f"Error saving user session: {e}")
 
-
-def build_conversational_context(username: str, current_query: str, thread_id: str = None, thread_isolation: bool = False) -> str:
-    """Build context - optimized to reduce size"""
-    context_parts = []
-    
-    session_info = user_sessions.get(username, {})
-    if session_info:
-        context_parts.append(f"User: {username}")
-    
-    if thread_isolation and thread_id:
-        thread = history_manager.get_thread(thread_id)
-        if thread and thread.messages:
-            context_parts.append(f"Thread: {thread.title}")
-            recent_messages = thread.messages[-3:]
-            if recent_messages:
-                context_parts.append("Recent conversation:")
-                for msg in recent_messages:
-                    context_parts.append(f"Q: {msg['user_message'][:100]}")
-                    context_parts.append(f"A: {msg['bot_response'][:100]}")
-    else:
-        if thread_id:
-            thread = history_manager.get_thread(thread_id)
-            if thread and thread.messages:
-                recent_messages = thread.messages[-2:]
-                if recent_messages:
-                    context_parts.append("Previous:")
-                    for msg in recent_messages:
-                        context_parts.append(f"Q: {msg['user_message'][:80]}")
-                        context_parts.append(f"A: {msg['bot_response'][:80]}")
-    
-    return "\n".join(context_parts)
-
-
 def update_enhanced_memory(username: str, question: str, answer: str, bot_type: str, user_role: str, thread_id: str = None):
     """Update memory - runs in background thread"""
     try:
@@ -1337,13 +1274,11 @@ def update_enhanced_memory(username: str, question: str, answer: str, bot_type: 
     except Exception as e:
         logger.error(f"Error storing memory: {e}")
 
-
 # ===========================
 # FASTAPI APP INITIALIZATION
 # ===========================
 app = FastAPI(title="GoodBooks AI-Powered Role-Based ERP Assistant - FIXED")
 
-# Add performance monitoring middleware
 app.add_middleware(PerformanceMonitoringMiddleware)
 
 app.add_middleware(
@@ -1360,26 +1295,20 @@ app.add_middleware(
 class Message(BaseModel):
     content: str
 
-
 class ThreadRequest(BaseModel):
     thread_id: Optional[str] = None
     message: str
 
-
 class ThreadRenameRequest(BaseModel):
     thread_id: str
     new_title: str
-
 
 # ===========================
 # API ENDPOINTS
 # ===========================
 @app.post("/gbaiapi/chat", tags=["AI Role-Based Chat"])
 async def ai_role_based_chat(message: Message, Login: str = Header(...)):
-    """
-    AI-powered role-based chat - NEW CONVERSATION (FIXED)
-    User's role must be provided in Login header
-    """
+    """AI-powered role-based chat - NEW CONVERSATION"""
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
@@ -1387,7 +1316,6 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header. Must include UserName and Role"})
     
-    # Validate role
     valid_roles = ["developer", "implementation", "marketing", "client", "admin"]
     if user_role not in valid_roles:
         return JSONResponse(status_code=400, content={"response": f"Invalid role. Must be one of: {', '.join(valid_roles)}"})
@@ -1398,10 +1326,7 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
         return JSONResponse(status_code=400, content={"response": "Please provide a message"})
     
     try:
-        # Create new thread (non-blocking)
         thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
-        
-        # Process with AI orchestrator
         result = await ai_orchestrator.process_request(username, user_role, user_input, thread_id)
         
         logger.info(f"✅ Response sent to {username} ({user_role})")
@@ -1417,12 +1342,9 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
             content={"response": error_response, "bot_type": "error"}
         )
 
-
 @app.post("/gbaiapi/thread_chat", tags=["AI Thread Chat"])
 async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
-    """
-    Continue conversation in existing thread with AI role-based intelligence (FIXED)
-    """
+    """Continue conversation in existing thread"""
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
@@ -1430,7 +1352,6 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
     
-    # Validate role
     valid_roles = ["developer", "implementation", "marketing", "client", "admin"]
     if user_role not in valid_roles:
         return JSONResponse(status_code=400, content={"response": f"Invalid role. Must be one of: {', '.join(valid_roles)}"})
@@ -1441,7 +1362,6 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
     if not user_input:
         return JSONResponse(status_code=400, content={"response": "Please provide a message"})
     
-    # Verify thread
     if thread_id:
         thread = history_manager.get_thread(thread_id)
         if not thread or thread.username != username:
@@ -1450,7 +1370,6 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
         thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
     
     try:
-        # Process with thread isolation
         result = await ai_orchestrator.process_request(
             username, user_role, user_input, thread_id, is_existing_thread=True
         )
@@ -1466,7 +1385,6 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
             status_code=500,
             content={"response": error_response, "bot_type": "error", "thread_id": thread_id}
         )
-
 
 @app.get("/gbaiapi/conversation_threads", tags=["Conversation History"])
 async def get_conversation_threads(Login: str = Header(...), limit: int = 50):
@@ -1489,7 +1407,6 @@ async def get_conversation_threads(Login: str = Header(...), limit: int = 50):
         "total_threads": len(threads)
     }
 
-
 @app.get("/gbaiapi/thread/{thread_id}", tags=["Conversation History"])
 async def get_thread_details(thread_id: str, Login: str = Header(...)):
     """Get thread details"""
@@ -1505,7 +1422,6 @@ async def get_thread_details(thread_id: str, Login: str = Header(...)):
         return JSONResponse(status_code=404, content={"response": "Thread not found"})
     
     return thread.to_dict()
-
 
 @app.delete("/gbaiapi/thread/{thread_id}", tags=["Conversation History"])
 async def delete_thread(thread_id: str, Login: str = Header(...)):
@@ -1523,7 +1439,6 @@ async def delete_thread(thread_id: str, Login: str = Header(...)):
     else:
         return JSONResponse(status_code=404, content={"response": "Thread not found"})
 
-
 @app.put("/gbaiapi/thread/{thread_id}/rename", tags=["Conversation History"])
 async def rename_thread(thread_id: str, request: ThreadRenameRequest, Login: str = Header(...)):
     """Rename a thread"""
@@ -1539,7 +1454,6 @@ async def rename_thread(thread_id: str, request: ThreadRenameRequest, Login: str
         return {"message": "Thread renamed successfully"}
     else:
         return JSONResponse(status_code=404, content={"response": "Thread not found"})
-
 
 @app.get("/gbaiapi/available_roles", tags=["Role Information"])
 async def get_available_roles():
@@ -1580,7 +1494,6 @@ async def get_available_roles():
         "default_role": "client",
         "note": "Role must be selected during login and passed in the Login header as 'Role' field"
     }
-
 
 @app.get("/gbaiapi/system_status", tags=["System Health"])
 async def system_status():
@@ -1645,7 +1558,6 @@ async def system_status():
         ]
     }
 
-
 @app.get("/gbaiapi/user_statistics", tags=["Analytics"])
 async def get_user_statistics(Login: str = Header(...)):
     """Get user statistics"""
@@ -1695,7 +1607,6 @@ async def get_user_statistics(Login: str = Header(...)):
         }
     }
 
-
 @app.post("/gbaiapi/cleanup_old_data", tags=["System Maintenance"])
 async def cleanup_old_data(Login: str = Header(...), days_to_keep: int = 90):
     """Cleanup old data (admin only)"""
@@ -1718,7 +1629,6 @@ async def cleanup_old_data(Login: str = Header(...), days_to_keep: int = 90):
     except Exception as e:
         logger.error(f"Cleanup error: {e}")
         return JSONResponse(status_code=500, content={"response": "Cleanup failed"})
-
 
 @app.get("/gbaiapi/performance_stats", tags=["System Health"])
 async def get_performance_stats():
@@ -1750,7 +1660,6 @@ async def get_performance_stats():
             "bot_chain": "Primary bot → General bot → Out-of-scope"
         }
     }
-
 
 @app.get("/gbaiapi/debug/test_bot/{bot_name}", tags=["Debug"])
 async def test_bot(bot_name: str, question: str = "What is GoodBooks?", Login: str = Header(...)):
@@ -1799,17 +1708,14 @@ async def test_bot(bot_name: str, question: str = "What is GoodBooks?", Login: s
             "traceback": traceback.format_exc()
         })
 
-
 @app.get("/gbaiapi/debug/test_routing", tags=["Debug"])
 async def test_routing(question: str):
     """Test intent routing without executing bot (for debugging)"""
     try:
         logger.info(f"🧪 Testing routing for question: {question}")
         
-        # Test keyword-based routing
         keyword_intent = ai_orchestrator._get_cached_intent(question)
         
-        # Test AI routing
         start_time = time.time()
         ai_intent = await ai_orchestrator.detect_intent_with_ai(question, "")
         elapsed = time.time() - start_time
@@ -1828,7 +1734,6 @@ async def test_routing(question: str):
             "traceback": traceback.format_exc()
         })
 
-
 @app.get("/gbaiapi/debug/clear_cache", tags=["Debug"])
 async def clear_intent_cache():
     """Clear intent cache (for debugging)"""
@@ -1840,6 +1745,14 @@ async def clear_intent_cache():
         "current_cache_size": len(ai_orchestrator.intent_cache)
     }
 
+@app.get("/health", tags=["System Health"])
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": "8.0.0-FIXED-ENHANCED"
+    }
 
 # ===========================
 # STARTUP/SHUTDOWN EVENTS
@@ -1889,12 +1802,10 @@ async def startup_event():
     logger.info("="*80)
 
     try:
-        # Warm up the model
         logger.info("🔥 Warming up Ollama model...")
         await ai_orchestrator.routing_llm.ainvoke("test")
         logger.info("✅ Model warmed up successfully")
         
-        # Cleanup old threads
         await asyncio.to_thread(history_manager.cleanup_old_threads, 180)
         logger.info("✅ Startup cleanup completed")
     except Exception as e:
@@ -1903,7 +1814,6 @@ async def startup_event():
     logger.info("="*80)
     logger.info("🎉 Server ready to accept requests!")
     logger.info("="*80)
-
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1914,7 +1824,6 @@ async def shutdown_event():
         await asyncio.to_thread(history_manager.save_threads)
         logger.info("✅ All thread data saved to Firestore")
         
-        # Save memory vectorstore
         logger.info("💾 Saving memory vectorstore...")
         await asyncio.to_thread(enhanced_memory.memory_vectorstore.save_local, MEMORY_VECTORSTORE_PATH)
         logger.info("✅ Memory vectorstore saved")
@@ -1926,7 +1835,6 @@ async def shutdown_event():
     logger.info("👋 Shutdown complete")
     logger.info("="*80)
 
-
 # ===========================
 # MAIN ENTRY POINT
 # ===========================
@@ -1937,4 +1845,3 @@ if __name__ == "__main__":
     logger.info(f"🚀 Starting FIXED & ENHANCED server on port {port}")
     logger.info("="*80)
     uvicorn.run(app, host="0.0.0.0", port=port)
-            
