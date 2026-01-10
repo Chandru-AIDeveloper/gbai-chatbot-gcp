@@ -27,7 +27,7 @@ DOCUMENTS_DIR = "/app/data"
 
 class Message(BaseModel):
     content: str
-
+    context: str = ""
 def spell_check(text: str) -> str:
     return text
 

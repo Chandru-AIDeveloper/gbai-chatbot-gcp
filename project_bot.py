@@ -28,6 +28,7 @@ DOCUMENTS_DIR = "/app/data"
 
 class Message(BaseModel):
     content: str
+    context: str = ""
 
 def spell_check(text: str) -> str:
     return text  # Placeholder (can add real spell checker later)
@@ -199,7 +200,8 @@ if retriever:
         {
             "context": lambda x: retriever.invoke(x["question"]),
             "question": lambda x: x["question"],
-            "history": lambda x: x["history"]
+            "history": lambda x: x["history"],
+            "orchestrator_context": lambda x: x["orchestrator_context"]
         }
         | prompt
         | llm
@@ -226,9 +228,10 @@ async def project_chat(message: Message, Login: str = Header(...)):
 
     try:
         history_str = ""
+        orchestrator_context = message.context
 
         if retriever:
-            answer = chain.invoke({"question": user_input, "history": history_str})
+            answer = chain.invoke({"question": user_input, "history": history_str, "orchestrator_context": orchestrator_context})
         else:
             fallback_prompt = f"Only answer based on data context. Human: {user_input}\nAssistant:"
             answer = llm.invoke(fallback_prompt).content

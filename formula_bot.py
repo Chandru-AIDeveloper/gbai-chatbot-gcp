@@ -27,6 +27,7 @@ DOCUMENTS_DIR = "/app/data"
 
 class Message(BaseModel):
     content: str
+    context: str = ""
 
 def spell_check(text: str) -> str:
     return text
@@ -172,7 +173,7 @@ Assistant Response:
 """
 
 
-prompt = ChatPromptTemplate.from_template(prompt_template)
+prompt = prompt_template
 
 if retriever:
     def format_docs(docs):
@@ -182,15 +183,6 @@ if retriever:
             source = doc.metadata.get('source', 'Unknown source')
             formatted.append(f"Source {i} ({source}):\n{content}\n")
         return "\n".join(formatted)
-
-    chain = (
-        RunnablePassthrough.assign(
-            context=lambda x: format_docs(retriever.invoke(x["question"]))
-        )
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
 
 def extract_json_from_answer(answer_text: str):
     try:
@@ -232,11 +224,19 @@ async def chat(message: Message, Login: str = Header(...)):
                 content={"response": "Formula data is not available. Please ensure the data directory contains your Formula files."}
             )
         history_str = ""
-        response_data = {
-            "question": user_input,
-            "history": history_str
-        }
-        answer = chain.invoke(response_data)
+        orchestrator_context = message.context
+        
+        docs = retriever.invoke(user_input)
+        context_str = format_docs(docs) if docs else "No relevant documents found"
+        
+        prompt_text = prompt.format(
+            orchestrator_context=orchestrator_context if orchestrator_context else "No prior context",
+            context=context_str,
+            history=history_str,
+            question=user_input
+        )
+        
+        answer = llm.invoke(prompt_text).content
         cleaned_answer = clean_response(answer)
 
         structured_json = extract_json_from_answer(cleaned_answer)
