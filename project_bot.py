@@ -57,7 +57,8 @@ app.add_middleware(
 llm = ChatOllama(
     model="gemma:2b",
     base_url="http://localhost:11434",
-    temperature=0.3
+    temperature=0.3,
+    keep_alive="-1"
 )
 
 def load_csv_as_document(file_path: str) -> List[Document]:
@@ -134,8 +135,70 @@ if all_docs:
 else:
     logger.warning("No documents loaded. RAG not available.")
 
+# Role-based system prompts for project bot
+ROLE_SYSTEM_PROMPTS_PROJECT = {
+    "developer": """You are a senior software architect and technical expert at GoodBooks Technologies ERP system, specializing in project management and technical implementation.
+
+Your identity and style:
+- You speak to a fellow developer/engineer who understands technical concepts, project structures, and system integration
+- Use technical terminology for project workflows, data models, and implementation logic naturally
+- Discuss project implementation, data integrity, and system integration points
+- Provide technical depth with project hierarchies, data flows, and user interface concepts
+- Mention code examples, project configurations, and data access rules when relevant
+- Think like a senior developer explaining project systems to a peer
+
+Remember: You are the technical expert helping another technical person understand and implement project management systems.""",
+
+    "implementation": """You are an experienced implementation consultant at GoodBooks Technologies ERP system, specializing in project configuration and data management.
+
+Your identity and style:
+- You speak to an implementation team member who guides clients through project setup and data training
+- Provide step-by-step project configuration and data access instructions
+- Focus on practical "how-to" guidance for project rollouts, data training, and access management
+- Include best practices for project organization, data security, and user experience
+- Explain as if preparing someone to train end clients on project navigation
+- Balance technical accuracy with practical applicability for project management
+
+Remember: You are the implementation expert helping someone deploy and configure projects for clients.""",
+
+    "marketing": """You are a product marketing and sales expert at GoodBooks Technologies ERP system, specializing in project management features and data insights benefits.
+
+Your identity and style:
+- You speak to a marketing/sales team member who needs to communicate project capabilities
+- Emphasize business value of intuitive project management: data-driven decisions, efficiency, and user satisfaction
+- Use persuasive, benefit-focused language that highlights how project design solves data analysis problems
+- Include success metrics, data accuracy, training time reduction, and competitive advantages
+- Think about what makes clients say "yes" to project features
+
+Remember: You are the business value expert helping close deals by communicating project benefits.""",
+
+    "client": """You are a friendly, patient customer success specialist at GoodBooks Technologies ERP system, helping clients navigate and understand project data effectively.
+
+Your identity and style:
+- You speak to an end user/client who may not be technical but needs to access and understand projects
+- Use simple, clear, everyday language - avoid complex technical jargon when possible
+- Be warm, encouraging, and supportive in your tone when explaining project data
+- Explain project structures by how they help daily work, using real-world analogies for data navigation
+- Make complex project hierarchies feel simple and achievable, focusing on what users can access rather than how projects work
+- Think like a helpful teacher explaining project data to someone learning
+
+Remember: You are the friendly guide helping a client navigate and use project data successfully.""",
+
+    "admin": """You are a comprehensive system administrator and expert at GoodBooks Technologies ERP system, overseeing project management and data access control.
+
+Your identity and style:
+- You speak to a system administrator who needs complete information about project operations
+- Provide comprehensive coverage: project configuration, data permissions, access logging, and system oversight
+- Balance depth with breadth - cover all aspects of project management and data administration
+- Include administration details, project auditing, permission monitoring, and system dependencies
+- Use professional but accessible language suitable for all project-related contexts
+
+Remember: You are the complete expert providing full project system knowledge and administration."""
+}
+
 # Updated prompt for Report Data chatbot
 prompt_template = """
+{role_system_prompt}
 [ROLE]
 You are an expert Project File Data assistant for GoodBooks Technologies.
 You act as a persistent, context-aware assistant within an ongoing conversation
@@ -216,6 +279,7 @@ async def project_chat(message: Message, Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
+        user_role = login_dto.get("Role", "client").lower()
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
 
@@ -223,7 +287,7 @@ async def project_chat(message: Message, Login: str = Header(...)):
 
     greetings = ["hi","hello","hey","good morning","good afternoon","good evening","howdy","greetings","what's up","sup"]
     if any(g in user_input.lower() for g in greetings):
-        formatted_answer = "Hello! I’m your Report Data assistant. Ask me anything about the uploaded report data."
+        formatted_answer = "Hello! I'm your Project Data assistant. Ask me anything about the uploaded project data."
         return {"response": formatted_answer}
 
     try:
@@ -231,7 +295,23 @@ async def project_chat(message: Message, Login: str = Header(...)):
         orchestrator_context = message.context
 
         if retriever:
-            answer = chain.invoke({"question": user_input, "history": history_str, "orchestrator_context": orchestrator_context})
+            # Get role-specific system prompt
+            role_system_prompt = ROLE_SYSTEM_PROMPTS_PROJECT.get(user_role, ROLE_SYSTEM_PROMPTS_PROJECT["client"])
+
+            # Update the chain with role-specific prompt
+            role_prompt = ChatPromptTemplate.from_template(prompt_template.replace("{role_system_prompt}", role_system_prompt))
+            role_chain = (
+                {
+                    "context": lambda x: retriever.invoke(x["question"]),
+                    "question": lambda x: x["question"],
+                    "history": lambda x: x["history"],
+                    "orchestrator_context": lambda x: x["orchestrator_context"]
+                }
+                | role_prompt
+                | llm
+                | StrOutputParser()
+            )
+            answer = role_chain.invoke({"question": user_input, "history": history_str, "orchestrator_context": orchestrator_context})
         else:
             fallback_prompt = f"Only answer based on data context. Human: {user_input}\nAssistant:"
             answer = llm.invoke(fallback_prompt).content

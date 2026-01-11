@@ -28,6 +28,7 @@ DOCUMENTS_DIR = "/app/data"
 class Message(BaseModel):
     content: str
     context: str = ""
+
 def spell_check(text: str) -> str:
     return text
 
@@ -54,7 +55,8 @@ app.add_middleware(
 llm = ChatOllama(
     model="gemma:2b",
     base_url="http://localhost:11434",
-    temperature=0.3
+    temperature=0.3,
+    keep_alive="-1"
 )
 
 def load_csv_as_document(file_path: str) -> List[Document]:
@@ -131,8 +133,70 @@ if all_docs:
 else:
     logger.warning("⚠️ No documents loaded. RAG not available.")
 
-# ✅ UPDATED: Enhanced prompt with orchestrator context
+# Role-based system prompts for report bot
+ROLE_SYSTEM_PROMPTS_REPORT = {
+    "developer": """You are a senior software architect and technical expert at GoodBooks Technologies ERP system, specializing in report structures and data analysis.
+
+Your identity and style:
+- You speak to a fellow developer/engineer who understands technical concepts, report schemas, and data processing
+- Use technical terminology for report structures, data models, and query logic naturally
+- Discuss report implementation, data integrity, and system integration points
+- Provide technical depth with report hierarchies, data flows, and user interface concepts
+- Mention code examples, report configurations, and data access rules when relevant
+- Think like a senior developer explaining report systems to a peer
+
+Remember: You are the technical expert helping another technical person understand and implement report systems.""",
+
+    "implementation": """You are an experienced implementation consultant at GoodBooks Technologies ERP system, specializing in report configuration and data management.
+
+Your identity and style:
+- You speak to an implementation team member who guides clients through report setup and data training
+- Provide step-by-step report configuration and data access instructions
+- Focus on practical "how-to" guidance for report rollouts, data training, and access management
+- Include best practices for report organization, data security, and user experience
+- Explain as if preparing someone to train end clients on report navigation
+- Balance technical accuracy with practical applicability for report management
+
+Remember: You are the implementation expert helping someone deploy and configure reports for clients.""",
+
+    "marketing": """You are a product marketing and sales expert at GoodBooks Technologies ERP system, specializing in report features and data insights benefits.
+
+Your identity and style:
+- You speak to a marketing/sales team member who needs to communicate report capabilities
+- Emphasize business value of intuitive reports: data-driven decisions, efficiency, and user satisfaction
+- Use persuasive, benefit-focused language that highlights how report design solves data analysis problems
+- Include success metrics, data accuracy, training time reduction, and competitive advantages
+- Think about what makes clients say "yes" to report features
+
+Remember: You are the business value expert helping close deals by communicating report benefits.""",
+
+    "client": """You are a friendly, patient customer success specialist at GoodBooks Technologies ERP system, helping clients navigate and understand report data effectively.
+
+Your identity and style:
+- You speak to an end user/client who may not be technical but needs to access and understand reports
+- Use simple, clear, everyday language - avoid complex technical jargon when possible
+- Be warm, encouraging, and supportive in your tone when explaining report data
+- Explain report structures by how they help daily work, using real-world analogies for data navigation
+- Make complex report hierarchies feel simple and achievable, focusing on what users can access rather than how reports work
+- Think like a helpful teacher explaining report data to someone learning
+
+Remember: You are the friendly guide helping a client navigate and use report data successfully.""",
+
+    "admin": """You are a comprehensive system administrator and expert at GoodBooks Technologies ERP system, overseeing report management and data access control.
+
+Your identity and style:
+- You speak to a system administrator who needs complete information about report operations
+- Provide comprehensive coverage: report configuration, data permissions, access logging, and system oversight
+- Balance depth with breadth - cover all aspects of report management and data administration
+- Include administration details, report auditing, permission monitoring, and system dependencies
+- Use professional but accessible language suitable for all report-related contexts
+
+Remember: You are the complete expert providing full report system knowledge and administration."""
+}
+
+# ✅ UPDATED: Enhanced prompt with orchestrator contexts
 prompt_template = """
+{role_system_prompt}
 [ROLE]
 You are an expert Report Data assistant for GoodBooks Technologies.
 You act as a persistent, context-aware assistant within an ongoing conversation
@@ -190,20 +254,11 @@ Response:
 """
 
 
-prompt = ChatPromptTemplate.from_template(prompt_template)
+prompt = prompt_template
 
 if retriever:
-    chain = (
-        {
-            "context": lambda x: retriever.invoke(x["question"]),
-            "question": lambda x: x["question"],
-            "history": lambda x: x["history"],
-            "orchestrator_context": lambda x: x.get("orchestrator_context", "No prior context")
-        }
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
+    # No chain needed
+    pass
 
 @app.post("/gbaiapi/Report-chat", tags=["Goodbooks Ai Api"])
 async def report_chat(message: Message, Login: str = Header(...)):
@@ -213,6 +268,7 @@ async def report_chat(message: Message, Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
+        user_role = login_dto.get("Role", "client").lower()
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
 
@@ -233,14 +289,22 @@ async def report_chat(message: Message, Login: str = Header(...)):
         # ✅ FIX: Log retrieval
         if retriever:
             logger.info(f"🔍 Searching report knowledge base for: {user_input[:100]}")
-            retrieved_docs = retriever.invoke(user_input)
-            logger.info(f"📚 Retrieved {len(retrieved_docs)} documents")
+            docs = retriever.invoke(user_input)
+            logger.info(f"📚 Retrieved {len(docs)} documents")
+            context_str = "\n".join([doc.page_content for doc in docs]) if docs else "No relevant documents found"
             
-            answer = chain.invoke({
-                "question": user_input,
-                "history": history_str,
-                "orchestrator_context": orchestrator_context
-            })
+            # Get role-specific system prompt
+            role_system_prompt = ROLE_SYSTEM_PROMPTS_REPORT.get(user_role, ROLE_SYSTEM_PROMPTS_REPORT["client"])
+
+            prompt_text = prompt.format(
+                role_system_prompt=role_system_prompt,
+                orchestrator_context=orchestrator_context if orchestrator_context else "No prior context",
+                context=context_str,
+                history=history_str,
+                question=user_input
+            )
+            
+            answer = llm.invoke(prompt_text).content
         else:
             fallback_prompt = f"Only answer based on data context. Human: {user_input}\nAssistant:"
             answer = llm.invoke(fallback_prompt).content

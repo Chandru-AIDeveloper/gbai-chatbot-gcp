@@ -876,7 +876,8 @@ class AIOrchestrationAgent:
             num_ctx=1024,
             repeat_penalty=1.1,
             top_k=20,
-            top_p=0.8
+            top_p=0.8,
+            keep_alive="-1"
         )
         
         self.response_llm = ChatOllama(
@@ -887,7 +888,8 @@ class AIOrchestrationAgent:
             num_ctx=2048,
             repeat_penalty=1.1,
             top_k=40,
-            top_p=0.9
+            top_p=0.9,
+            keep_alive="-1"
         )
         
         self.bots = {
@@ -909,7 +911,8 @@ class AIOrchestrationAgent:
             'calculate', 'compute', 'formula', 'math', 'sum', 'average', 'total', 
             'count', 'percentage', 'divide', 'multiply', 'subtract', 'add',
             'equation', 'expression', 'result of', 'what is', 'how much',
-            '+', '-', '*', '/', '=', '%', 'mean', 'median'
+            '+', '-', '*', '/', '=', '%', 'mean', 'median', 'gst', 'tax', 'discount',
+            'net amount', 'gross', 'valuation', 'variance'
         ]
         has_numbers = any(char.isdigit() for char in question_lower)
         has_math_ops = any(op in question_lower for op in ['+', '-', '*', '/', '=', '%'])
@@ -925,7 +928,8 @@ class AIOrchestrationAgent:
             'dashboard', 'visualize', 'show me data', 'statistics', 'stats',
             'metric', 'kpi', 'performance', 'trend', 'summary', 'breakdown',
             'export', 'generate report', 'view report', 'display data',
-            'show chart', 'create graph'
+            'show chart', 'create graph', 'table', 'listing', 'history of',
+            'details of', 'ledger', 'balance sheet', 'p&l', 'profit', 'loss'
         ]
         if any(word in question_lower for word in report_keywords):
             logger.info("🚀 Fast route: report")
@@ -937,7 +941,8 @@ class AIOrchestrationAgent:
             'how to access', 'location of', 'where can i', 'how do i find',
             'show me how to get to', 'navigation', 'screen', 'page',
             'section', 'tab', 'button', 'option', 'find the', 'locate',
-            'path to', 'go to'
+            'path to', 'go to', 'how to open', 'where to find', 'accessing',
+            'shortcut', 'ui', 'module location'
         ]
         if any(word in question_lower for word in menu_keywords):
             logger.info("🚀 Fast route: menu")
@@ -947,11 +952,23 @@ class AIOrchestrationAgent:
         project_keywords = [
             'project', 'project file', 'project report', 'project document',
             'project status', 'project management', 'task', 'milestone',
-            'deliverable', 'timeline', 'gantt', 'workstream', 'project plan'
+            'deliverable', 'timeline', 'gantt', 'workstream', 'project plan',
+            'project details', 'mfile', 'uploaded files', 'project data'
         ]
         if any(word in question_lower for word in project_keywords):
             logger.info("🚀 Fast route: project")
             return "project"
+        
+        # General bot keywords (to avoid routing LLM for common generic questions)
+        general_keywords = [
+            'what is', 'who is', 'tell me about', 'explain', 'describe',
+            'help with', 'how does', 'info on', 'company', 'goodbooks',
+            'features', 'modules', 'support', 'contact', 'employee',
+            'leave policy', 'hr', 'it', 'office'
+        ]
+        if any(word in question_lower for word in general_keywords):
+            logger.info("🚀 Fast route: general")
+            return "general"
         
         if question_lower in self.intent_cache:
             cached = self.intent_cache[question_lower]
@@ -1207,8 +1224,8 @@ Rewritten Answer:"""
             answer = await self.generate_out_of_scope_response(question, user_role)
             bot_type = "out_of_scope"
         else:
-            logger.info(f"🎭 Preparing to apply role perspective...")
-            answer = await self.apply_role_perspective(answer, user_role, question)
+            logger.info(f"⚡ Skipping redundant role adaptation - bot handled it in-situ")
+            # answer = await self.apply_role_perspective(answer, user_role, question)
         
         logger.info("💾 Storing conversation in background...")
         asyncio.create_task(
@@ -1861,4 +1878,3 @@ if __name__ == "__main__":
     logger.info(f"🚀 Starting FIXED & ENHANCED server on port {port}")
     logger.info("="*80)
     uvicorn.run(app, host="0.0.0.0", port=port)
-    

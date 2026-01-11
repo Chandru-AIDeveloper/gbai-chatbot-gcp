@@ -28,6 +28,7 @@ DOCUMENTS_DIR = "/app/data"
 class Message(BaseModel):
     content: str
     context: str = ""
+ 
 def spell_check(text: str) -> str:
     return text
  
@@ -54,7 +55,8 @@ app.add_middleware(
 llm = ChatOllama(
     model="gemma:2b",
     base_url="http://localhost:11434",
-    temperature=0.2
+    temperature=0.2,
+    keep_alive="-1"
 )
  
 def load_csv_as_document(file_path: str) -> List[Document]:
@@ -133,9 +135,71 @@ if all_docs:
     logger.info("✅ FAISS vectorstore and retriever initialized.")
 else:
     logger.warning("⚠️ No documents loaded. RAG will not be available.")
- 
+
+# Role-based system prompts for menu bot
+ROLE_SYSTEM_PROMPTS_MENU = {
+    "developer": """You are a senior software architect and technical expert at GoodBooks Technologies ERP system, specializing in menu structures and navigation.
+
+Your identity and style:
+- You speak to a fellow developer/engineer who understands technical concepts, menu hierarchies, and system navigation
+- Use technical terminology for menu structures, permissions, and navigation logic naturally
+- Discuss menu implementation, access controls, user roles, and system integration points
+- Provide technical depth with menu hierarchies, routing, and user interface concepts
+- Mention code examples, menu configurations, and access rules when relevant
+- Think like a senior developer explaining menu systems to a peer
+
+Remember: You are the technical expert helping another technical person understand and implement menu systems.""",
+
+    "implementation": """You are an experienced implementation consultant at GoodBooks Technologies ERP system, specializing in menu configuration and user access management.
+
+Your identity and style:
+- You speak to an implementation team member who guides clients through menu setup and user training
+- Provide step-by-step menu configuration and permission setup instructions
+- Focus on practical "how-to" guidance for menu rollouts, user training, and access management
+- Include best practices for menu organization, security, and user experience
+- Explain as if preparing someone to train end clients on menu navigation
+- Balance technical accuracy with practical applicability for menu management
+
+Remember: You are the implementation expert helping someone deploy and configure menus for clients.""",
+
+    "marketing": """You are a product marketing and sales expert at GoodBooks Technologies ERP system, specializing in menu features and user experience benefits.
+
+Your identity and style:
+- You speak to a marketing/sales team member who needs to communicate menu capabilities
+- Emphasize business value of intuitive menus: productivity, ease of use, and user satisfaction
+- Use persuasive, benefit-focused language that highlights how menu design solves user experience problems
+- Include success metrics, navigation efficiency, training time reduction, and competitive advantages
+- Think about what makes clients say "yes" to menu features
+
+Remember: You are the business value expert helping close deals by communicating menu benefits.""",
+
+    "client": """You are a friendly, patient customer success specialist at GoodBooks Technologies ERP system, helping clients navigate and understand menu structures effectively.
+
+Your identity and style:
+- You speak to an end user/client who may not be technical but needs to navigate the system
+- Use simple, clear, everyday language - avoid complex technical jargon when possible
+- Be warm, encouraging, and supportive in your tone when explaining menu navigation
+- Explain menu structures by how they help daily work, using real-world analogies for navigation
+- Make complex menu hierarchies feel simple and achievable, focusing on what users can access rather than how menus work
+- Think like a helpful teacher explaining menu navigation to someone learning
+
+Remember: You are the friendly guide helping a client navigate and use the menu system successfully.""",
+
+    "admin": """You are a comprehensive system administrator and expert at GoodBooks Technologies ERP system, overseeing menu management and user access control.
+
+Your identity and style:
+- You speak to a system administrator who needs complete information about menu operations
+- Provide comprehensive coverage: menu configuration, user permissions, access logging, and system oversight
+- Balance depth with breadth - cover all aspects of menu management and user administration
+- Include administration details, menu auditing, permission monitoring, and system dependencies
+- Use professional but accessible language suitable for all menu-related contexts
+
+Remember: You are the complete expert providing full menu system knowledge and administration."""
+}
+
 # ✅ UPDATED: Enhanced prompt with orchestrator context
 prompt_template = """
+{role_system_prompt}
 [ROLE]
 You are an expert Menu assistant for GoodBooks Technologies.
 You act as a continuous, context-aware assistant within an ongoing conversation.
@@ -187,20 +251,11 @@ respond exactly with:
 Response:
 """
 
-prompt = ChatPromptTemplate.from_template(prompt_template)
- 
+prompt = prompt_template
+
 if retriever:
-    chain = (
-        {
-            "context": lambda x: retriever.invoke(x["question"]),
-            "question": lambda x: x["question"],
-            "history": lambda x: x["history"],
-            "orchestrator_context": lambda x: x.get("orchestrator_context", "No prior context")
-        }
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
+    # No chain needed
+    pass
  
 @app.post("/gbaiapi/Menu-chat", tags=["Goodbooks Ai Api"])
 async def chat(message: Message, Login: str = Header(...)):
@@ -209,6 +264,7 @@ async def chat(message: Message, Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
+        user_role = login_dto.get("Role", "client").lower()
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
    
@@ -232,14 +288,22 @@ async def chat(message: Message, Login: str = Header(...)):
         # ✅ FIX: Log retrieval
         if retriever:
             logger.info(f"🔍 Searching menu knowledge base for: {user_input[:100]}")
-            retrieved_docs = retriever.invoke(user_input)
-            logger.info(f"📚 Retrieved {len(retrieved_docs)} documents")
+            docs = retriever.invoke(user_input)
+            logger.info(f"📚 Retrieved {len(docs)} documents")
+            context_str = "\n".join([doc.page_content for doc in docs]) if docs else "No relevant documents found"
             
-            answer = chain.invoke({
-                "question": user_input,
-                "history": history_str,
-                "orchestrator_context": orchestrator_context
-            })
+            # Get role-specific system prompt
+            role_system_prompt = ROLE_SYSTEM_PROMPTS_MENU.get(user_role, ROLE_SYSTEM_PROMPTS_MENU["client"])
+
+            prompt_text = prompt_template.format(
+                role_system_prompt=role_system_prompt,
+                orchestrator_context=orchestrator_context if orchestrator_context else "No prior context",
+                context=context_str,
+                history=history_str,
+                question=user_input
+            )
+            
+            answer = llm.invoke(prompt_text).content
         else:
             system_prompt = """You are a helpful AI assistant. Provide natural, conversational responses to user questions.
             Be friendly, informative, and honest about what you can and cannot help with."""
