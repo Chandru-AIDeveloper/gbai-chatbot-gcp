@@ -230,7 +230,7 @@ llm = ChatOllama(
     model="gemma:2b",
     base_url="http://localhost:11434",
     temperature=0.3,
-    keep_alive="-1"
+    keep_alive= -1
 )
 # Role-based system prompts for schema bot
 ROLE_SYSTEM_PROMPTS_SCHEMA = {

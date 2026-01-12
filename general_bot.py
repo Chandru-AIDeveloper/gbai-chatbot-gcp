@@ -57,7 +57,7 @@ llm = ChatOllama(
     model="gemma:2b",
     base_url="http://localhost:11434",
     temperature=0.3,
-    keep_alive="-1"
+    keep_alive= -1
 )
  
 # Initialize embeddings (shared for both document and memory vectorstores)

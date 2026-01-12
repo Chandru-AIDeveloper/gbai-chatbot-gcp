@@ -58,7 +58,7 @@ llm = ChatOllama(
     model="gemma:2b",
     base_url="http://localhost:11434",
     temperature=0.3,
-    keep_alive="-1"
+    keep_alive= -1
 )
 
 def load_csv_as_document(file_path: str) -> List[Document]:

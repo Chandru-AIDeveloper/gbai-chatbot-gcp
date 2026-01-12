@@ -89,6 +89,30 @@ class UserRole:
     MARKETING = "marketing"
     CLIENT = "client"
     ADMIN = "admin"
+    SYSTEM_ADMIN = "system admin"
+    MANAGER = "manager"
+    SALES = "sales"
+
+# Mapping ROLEID to internal role names
+ROLEID_TO_NAME = {
+    "-1799999969": "admin",          # SystemAdmin / Administrator
+    "-1499999995": "admin",          # Unisoft Manager
+    "-1499999994": "marketing",      # MARKETING MANAGER
+    "-1499999993": "marketing",      # Marketing Assistant
+    "-1499999992": "client",         # Accounts Assistant
+    "-1499999991": "client",         # HR-DEPARTMENT
+    "-1499999989": "marketing",      # Marketing Assistant1
+    "-1499999988": "admin",          # ADMINONLY
+    "-1499999987": "admin",          # QC
+    "-1499999986": "implementation", # Implmentation Team 
+    "-1499999984": "client",         # HR USER
+    "-1499999982": "client",         # HR-Assistannt
+    "-1499999981": "marketing",      # SALES-DEPARTMENT
+    "-1499999980": "marketing",      # SALES-AST
+    "-1499999979": "admin",          # Account Manager
+    "-1499999978": "developer",      # Developer
+    "-1499999967": "client"          # cashier
+}
 
 # Memory storage
 MEMORY_VECTORSTORE_PATH = "conversational_memory_vectorstore"
@@ -168,7 +192,37 @@ I help with:
 • Configuration management
 • User permissions & monitoring
 
-What can I assist you with?"""
+What can I assist you with?""",
+
+    UserRole.SYSTEM_ADMIN: """Hello! I'm your GoodBooks senior system administrator assistant.
+
+I'm here to help with:
+• Infrastructure & server health
+• Data security & access control
+• System optimization & maintenance
+• Technical administration
+
+How can I help you keep the system running perfectly today?""",
+
+    UserRole.MANAGER: """Hello! I'm your GoodBooks strategic management assistant.
+
+I can assist with:
+• Operational oversight & efficiency
+• Performance metrics & strategic insights
+• Team coordination & workflows
+• Business process optimization
+
+What management goals can I help you achieve today?""",
+
+    UserRole.SALES: """Hello! I'm your GoodBooks sales and revenue assistant.
+
+I help with:
+• Lead management & pipelines
+• Sales forecasting & performance
+• CRM optimization & customer insights
+• Revenue growth strategies
+
+How can I help you drive more sales today?"""
 }
 
 def is_greeting(text: str) -> bool:
@@ -248,9 +302,45 @@ Your identity and style:
 - Include administration, configuration, management, and oversight details
 - Use professional but accessible language suitable for all contexts
 
-Remember: You are the complete expert providing full system knowledge."""
-}
+Remember: You are the complete expert providing full system knowledge.""",
 
+    UserRole.SYSTEM_ADMIN: """You are a senior system administrator and infrastructure expert at GoodBooks Technologies ERP system.
+
+Your identity and style:
+- You speak to a fellow system admin or IT manager responsible for system health and infrastructure
+- Use technical terminology for server management, cloud infrastructure, security protocols, and system maintenance
+- Discuss database performance, backup strategies, user access control, and API rate limiting
+- Provide technical depth with system monitoring, logs analysis, and resource optimization details
+- Mention security best practices, system updates, and server configurations when relevant
+- Think like a senior administrator ensuring 99.9% uptime and data security
+
+Remember: You are the infrastructure expert ensuring the system runs smoothly, securely, and efficiently.""",
+
+    UserRole.MANAGER: """You are a strategic management consultant and operational expert at GoodBooks Technologies ERP system.
+
+Your identity and style:
+- You speak to a business manager, department head, or team lead focused on efficiency and oversight
+- Use business terminology for resource allocation, performance tracking, project timelines, and operational workflows
+- Discuss team productivity, cost-benefit analysis, strategic planning, and cross-departmental coordination
+- Provide high-level insights into organizational performance, risk management, and process improvement
+- Mention reporting dashboards, approval workflows, and business intelligence concepts when relevant
+- Think like a manager optimizing team output and business processes
+
+Remember: You are the operational expert helping managers make data-driven decisions and optimize business performance.""",
+
+    UserRole.SALES: """You are a senior sales strategist and revenue growth expert at GoodBooks Technologies ERP system.
+
+Your identity and style:
+- You speak to a sales professional or account manager focused on closing deals and managing pipelines
+- Use sales terminology for lead qualification, sales cycles, quotation management, and customer retention
+- Discuss pricing strategies, sales forecasting, CRM optimization, and market positioning
+- Provide practical guidance on managing customer relationships, following up on leads, and converting prospects
+- Mention sales reports, target tracking, and customer interaction histories when relevant
+- Think like a top-performing sales manager driving revenue and customer satisfaction
+
+Remember: You are the sales expert helping the team win more business and manage customer relationships effectively."""
+
+}
 # ===========================
 # AI ORCHESTRATOR SYSTEM PROMPT (ENHANCED)
 # ===========================
@@ -877,7 +967,7 @@ class AIOrchestrationAgent:
             repeat_penalty=1.1,
             top_k=20,
             top_p=0.8,
-            keep_alive="-1"
+            keep_alive= -1
         )
         
         self.response_llm = ChatOllama(
@@ -889,7 +979,7 @@ class AIOrchestrationAgent:
             repeat_penalty=1.1,
             top_k=40,
             top_p=0.9,
-            keep_alive="-1"
+            keep_alive= -1
         )
         
         self.bots = {
@@ -1329,11 +1419,14 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
-        user_role = login_dto.get("Role", "client").lower()
+        
+        # ✅ Map roleid to role name if present, otherwise fallback to "Role"
+        role_id = str(login_dto.get("roleid", ""))
+        user_role = ROLEID_TO_NAME.get(role_id, login_dto.get("Role", "client")).lower()
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header. Must include UserName and Role"})
     
-    valid_roles = ["developer", "implementation", "marketing", "client", "admin"]
+    valid_roles = ["developer", "implementation", "marketing", "client", "admin", "system admin", "manager", "sales"]
     if user_role not in valid_roles:
         return JSONResponse(status_code=400, content={"response": f"Invalid role. Must be one of: {', '.join(valid_roles)}"})
     
@@ -1365,11 +1458,14 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
-        user_role = login_dto.get("Role", "client").lower()
+        
+        # ✅ Map roleid to role name if present, otherwise fallback to "Role"
+        role_id = str(login_dto.get("roleid", ""))
+        user_role = ROLEID_TO_NAME.get(role_id, login_dto.get("Role", "client")).lower()
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
     
-    valid_roles = ["developer", "implementation", "marketing", "client", "admin"]
+    valid_roles = ["developer", "implementation", "marketing", "client", "admin", "system admin", "manager", "sales"]
     if user_role not in valid_roles:
         return JSONResponse(status_code=400, content={"response": f"Invalid role. Must be one of: {', '.join(valid_roles)}"})
     
@@ -1409,7 +1505,10 @@ async def get_conversation_threads(Login: str = Header(...), limit: int = 50):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
-        user_role = login_dto.get("Role", "client")
+        
+        # ✅ Map roleid to role name if present, otherwise fallback to "Role"
+        role_id = str(login_dto.get("roleid", ""))
+        user_role = ROLEID_TO_NAME.get(role_id, login_dto.get("Role", "client")).lower()
     except:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
     
@@ -1581,7 +1680,10 @@ async def get_user_statistics(Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
-        user_role = login_dto.get("Role", "client")
+        
+        # ✅ Map roleid to role name if present, otherwise fallback to "Role"
+        role_id = str(login_dto.get("roleid", ""))
+        user_role = ROLEID_TO_NAME.get(role_id, login_dto.get("Role", "client")).lower()
     except:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
     
@@ -1629,7 +1731,10 @@ async def cleanup_old_data(Login: str = Header(...), days_to_keep: int = 90):
     """Cleanup old data (admin only)"""
     try:
         login_dto = json.loads(Login)
-        user_role = login_dto.get("Role", "client")
+        
+        # ✅ Map roleid to role name if present, otherwise fallback to "Role"
+        role_id = str(login_dto.get("roleid", ""))
+        user_role = ROLEID_TO_NAME.get(role_id, login_dto.get("Role", "client")).lower()
         
         if user_role != "admin":
             return JSONResponse(status_code=403, content={"response": "Admin access required"})
@@ -1684,7 +1789,10 @@ async def test_bot(bot_name: str, question: str = "What is GoodBooks?", Login: s
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
-        user_role = login_dto.get("Role", "client").lower()
+        
+        # ✅ Map roleid to role name if present, otherwise fallback to "Role"
+        role_id = str(login_dto.get("roleid", ""))
+        user_role = ROLEID_TO_NAME.get(role_id, login_dto.get("Role", "client")).lower()
     except:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
     
@@ -1878,3 +1986,4 @@ if __name__ == "__main__":
     logger.info(f"🚀 Starting FIXED & ENHANCED server on port {port}")
     logger.info("="*80)
     uvicorn.run(app, host="0.0.0.0", port=port)
+    
