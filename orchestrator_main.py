@@ -20,6 +20,7 @@ from langchain_core.documents import Document
 from google.cloud import firestore
 from google.cloud import storage
 from concurrent.futures import ThreadPoolExecutor
+from shared_resources import ai_resources
 
 # Import bot modules
 try:
@@ -561,7 +562,7 @@ class EnhancedConversationalMemory:
             timestamp = datetime.now().isoformat()
             memory_id = f"{username}_{self.memory_counter}_{int(datetime.now().timestamp())}"
             
-            conversation_context = f"User ({user_role}): {user_message} | Bot ({bot_type}): {bot_response[:200]}"
+            conversation_context = f"User ({user_role}): {user_message} | Bot ({bot_type}): {bot_response[:1000]}"
             
             memory_doc = Document(
                 page_content=conversation_context,
@@ -584,7 +585,7 @@ class EnhancedConversationalMemory:
                 "user_role": user_role,
                 "timestamp": timestamp,
                 "user_message": user_message,
-                "bot_response": bot_response[:200],
+                "bot_response": bot_response[:1000],
                 "bot_type": bot_type,
                 "thread_id": thread_id
             }
@@ -661,7 +662,7 @@ class EnhancedMessage:
 
 class GeneralBotWrapper:
     @staticmethod
-    async def answer(question: str, context: str, user_role: str) -> str:
+    async def answer(question: str, context: str, user_role: str, username: str = "anonymous") -> str:
         if not GENERAL_BOT_AVAILABLE:
             logger.warning("❌ General bot not available")
             return None
@@ -670,7 +671,7 @@ class GeneralBotWrapper:
             logger.info(f"📚 Passing context: {len(context)} chars")
             
             message = EnhancedMessage(question, context)
-            login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            login_header = json.dumps({"UserName": username, "Role": user_role})
             
             result = await general_bot.chat(message, Login=login_header)
             
@@ -714,7 +715,7 @@ class GeneralBotWrapper:
 
 class FormulaBot:
     @staticmethod
-    async def answer(question: str, context: str, user_role: str) -> str:
+    async def answer(question: str, context: str, user_role: str, username: str = "anonymous") -> str:
         if not FORMULA_BOT_AVAILABLE:
             logger.warning("❌ Formula bot not available")
             return None
@@ -723,7 +724,7 @@ class FormulaBot:
             logger.info(f"📚 Passing context: {len(context)} chars")
             
             message = EnhancedMessage(question, context)
-            login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            login_header = json.dumps({"UserName": username, "Role": user_role})
             
             result = await formula_bot.chat(message, Login=login_header)
             
@@ -761,7 +762,7 @@ class FormulaBot:
 
 class ReportBot:
     @staticmethod
-    async def answer(question: str, context: str, user_role: str) -> str:
+    async def answer(question: str, context: str, user_role: str, username: str = "anonymous") -> str:
         if not REPORT_BOT_AVAILABLE:
             logger.warning("❌ Report bot not available")
             return None
@@ -770,7 +771,7 @@ class ReportBot:
             logger.info(f"📚 Passing context: {len(context)} chars")
             
             message = EnhancedMessage(question, context)
-            login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            login_header = json.dumps({"UserName": username, "Role": user_role})
             
             result = await report_bot.report_chat(message, Login=login_header)
             
@@ -808,7 +809,7 @@ class ReportBot:
 
 class MenuBot:
     @staticmethod
-    async def answer(question: str, context: str, user_role: str) -> str:
+    async def answer(question: str, context: str, user_role: str, username: str = "anonymous") -> str:
         if not MENU_BOT_AVAILABLE:
             logger.warning("❌ Menu bot not available")
             return None
@@ -817,7 +818,7 @@ class MenuBot:
             logger.info(f"📚 Passing context: {len(context)} chars")
             
             message = EnhancedMessage(question, context)
-            login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            login_header = json.dumps({"UserName": username, "Role": user_role})
             
             result = await menu_bot.chat(message, Login=login_header)
             
@@ -855,7 +856,7 @@ class MenuBot:
 
 class ProjectBot:
     @staticmethod
-    async def answer(question: str, context: str, user_role: str) -> str:
+    async def answer(question: str, context: str, user_role: str, username: str = "anonymous") -> str:
         if not PROJECT_BOT_AVAILABLE:
             logger.warning("❌ Project bot not available")
             return None
@@ -864,7 +865,7 @@ class ProjectBot:
             logger.info(f"📚 Passing context: {len(context)} chars")
             
             message = EnhancedMessage(question, context)
-            login_header = json.dumps({"UserName": "orchestrator", "Role": user_role})
+            login_header = json.dumps({"UserName": username, "Role": user_role})
             
             result = await project_bot.project_chat(message, Login=login_header)
             
@@ -920,16 +921,19 @@ def build_conversational_context(username: str, current_query: str, thread_id: s
         if thread and thread.messages:
             if thread_isolation:
                 context_parts.append(f"=== Current Conversation Thread: {thread.title} ===")
-                recent_messages = thread.messages[-5:]
+                # Increased from 5 to 10 for better continuity
+                recent_messages = thread.messages[-10:]
             else:
                 context_parts.append(f"=== Recent Conversation ===")
-                recent_messages = thread.messages[-3:]
+                # Increased from 3 to 7
+                recent_messages = thread.messages[-7:]
             
             if recent_messages:
                 for i, msg in enumerate(recent_messages, 1):
                     context_parts.append(f"\nTurn {i}:")
-                    context_parts.append(f"User: {msg['user_message'][:200]}")
-                    context_parts.append(f"Assistant ({msg['bot_type']}): {msg['bot_response'][:200]}")
+                    # Increased truncation limit from 200 to 1000 for better context
+                    context_parts.append(f"User: {msg['user_message'][:1000]}")
+                    context_parts.append(f"Assistant ({msg['bot_type']}): {msg['bot_response'][:1000]}")
                 context_parts.append("")
     
     memories = enhanced_memory.retrieve_contextual_memories(
@@ -958,29 +962,9 @@ def build_conversational_context(username: str, current_query: str, thread_id: s
 # ===========================
 class AIOrchestrationAgent:
     def __init__(self):
-        self.routing_llm = ChatOllama(
-            model="gemma:2b", 
-            base_url="http://localhost:11434", 
-            temperature=0.2,
-            num_predict=15,
-            num_ctx=1024,
-            repeat_penalty=1.1,
-            top_k=20,
-            top_p=0.8,
-            keep_alive= -1
-        )
-        
-        self.response_llm = ChatOllama(
-            model="gemma:2b",
-            base_url="http://localhost:11434",
-            temperature=0.2,
-            num_predict=512,
-            num_ctx=2048,
-            repeat_penalty=1.1,
-            top_k=40,
-            top_p=0.9,
-            keep_alive= -1
-        )
+        # Use centralized AI resources to save memory and reduce latency
+        self.routing_llm = ai_resources.routing_llm
+        self.response_llm = ai_resources.response_llm
         
         self.bots = {
             "general": GeneralBotWrapper(),
@@ -1275,7 +1259,7 @@ Rewritten Answer:"""
         logger.info(f"🤖 Executing {intent} bot...")
         try:
             answer = await asyncio.wait_for(
-                selected_bot.answer(question, context, user_role),
+                selected_bot.answer(question, context, user_role, username),
                 timeout=40.0
             )
             logger.info(f"📥 {intent} bot response received: {len(answer) if answer else 0} chars")
@@ -1293,7 +1277,7 @@ Rewritten Answer:"""
                 logger.info("🔄 Attempting fallback to general bot...")
                 try:
                     answer = await asyncio.wait_for(
-                        self.bots["general"].answer(question, context, user_role),
+                        self.bots["general"].answer(question, context, user_role, username),
                         timeout=40.0
                     )
                     if answer and len(answer.strip()) >= 10:
@@ -1805,7 +1789,7 @@ async def test_bot(bot_name: str, question: str = "What is GoodBooks?", Login: s
         
         selected_bot = ai_orchestrator.bots[bot_name]
         answer = await asyncio.wait_for(
-            selected_bot.answer(question, "", user_role),
+            selected_bot.answer(question, "", user_role, username),
             timeout=40.0
         )
         
@@ -1892,11 +1876,11 @@ async def startup_event():
         # --------------------------------------------------
         # 🔥 WARM OLLAMA MODELS (GPU LOAD)
         # --------------------------------------------------
-        logger.info("🔥 Warming routing model...")
-        await ai_orchestrator.routing_llm.ainvoke("hello")
-
-        logger.info("🔥 Warming response model...")
-        await ai_orchestrator.response_llm.ainvoke("Reply OK")
+        logger.info("🔥 Warming models in parallel...")
+        await asyncio.gather(
+            ai_orchestrator.routing_llm.ainvoke("hello"),
+            ai_orchestrator.response_llm.ainvoke("Reply OK")
+        )
 
         logger.info("✅ Ollama models warmed")
 
@@ -1929,18 +1913,21 @@ async def startup_event():
         async def warm_bot(bot, name):
             try:
                 await asyncio.wait_for(
-                    bot.answer("test", "", "client"),
-                    timeout=5
+                    bot.answer("test", "", "client", "__warmup__"),
+                    timeout=10
                 )
                 logger.info(f"🔥 {name} bot warmed")
             except Exception:
                 logger.warning(f"⚠️ {name} bot warm skipped")
 
-        await warm_bot(GeneralBotWrapper(), "general")
-        await warm_bot(FormulaBot(), "formula")
-        await warm_bot(ReportBot(), "report")
-        await warm_bot(MenuBot(), "menu")
-        await warm_bot(ProjectBot(), "project")
+        # 🔥 Parallelize sub-bot warmup for faster startup
+        await asyncio.gather(
+            warm_bot(GeneralBotWrapper(), "general"),
+            warm_bot(FormulaBot(), "formula"),
+            warm_bot(ReportBot(), "report"),
+            warm_bot(MenuBot(), "menu"),
+            warm_bot(ProjectBot(), "project")
+        )
 
         # --------------------------------------------------
         # 🧹 BACKGROUND CLEANUP
@@ -1986,4 +1973,3 @@ if __name__ == "__main__":
     logger.info(f"🚀 Starting FIXED & ENHANCED server on port {port}")
     logger.info("="*80)
     uvicorn.run(app, host="0.0.0.0", port=port)
-    

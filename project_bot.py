@@ -1,4 +1,3 @@
-
 import json
 import os
 import logging
@@ -19,6 +18,7 @@ from langchain_core.documents import Document
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
+from shared_resources import ai_resources
 from fastapi import Header
 
 logging.basicConfig(level=logging.INFO)
@@ -53,13 +53,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Get the Ollama URL from an environment variable, defaulting to localhost for local development
-llm = ChatOllama(
-    model="gemma:2b",
-    base_url="http://localhost:11434",
-    temperature=0.3,
-    keep_alive= -1
-)
+# Use centralized AI resources
+llm = ai_resources.response_llm
 
 def load_csv_as_document(file_path: str) -> List[Document]:
     """Load CSV file and convert to documents"""
@@ -128,7 +123,7 @@ if all_docs:
         from langchain_community.embeddings import HuggingFaceEmbeddings
         logger.warning("Using deprecated HuggingFaceEmbeddings.")
 
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    embeddings = ai_resources.embeddings
     vectorstore = FAISS.from_documents(text_chunks, embeddings)
     retriever = vectorstore.as_retriever(search_kwargs={"k": 50})
     logger.info("FAISS retriever ready.")

@@ -18,6 +18,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
+from shared_resources import ai_resources
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Header
 from fastapi import APIRouter
@@ -52,16 +53,11 @@ app.add_middleware(
 )
  
  
-# Initialize LLM
-llm = ChatOllama(
-    model="gemma:2b",
-    base_url="http://localhost:11434",
-    temperature=0.3,
-    keep_alive= -1
-)
+# Initialize LLM using centralized resources
+llm = ai_resources.response_llm
  
-# Initialize embeddings (shared for both document and memory vectorstores)
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+# Initialize embeddings using centralized resources
+embeddings = ai_resources.embeddings
  
 class ConversationalMemory:
     def __init__(self, vectorstore_path: str, metadata_file: str, embeddings):

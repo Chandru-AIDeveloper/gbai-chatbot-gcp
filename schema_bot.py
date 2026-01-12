@@ -15,6 +15,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
+from shared_resources import ai_resources
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -218,20 +219,15 @@ if all_docs:
     except ImportError:
         from langchain_community.embeddings import HuggingFaceEmbeddings
 
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    embeddings = ai_resources.embeddings
     vectorstore = FAISS.from_documents(text_chunks, embeddings)
     retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
     logger.info("FAISS retriever ready for schema queries.")
 else:
     logger.warning("No schema documents loaded. Schema chat not available.")
 
-# Initialize LLM
-llm = ChatOllama(
-    model="gemma:2b",
-    base_url="http://localhost:11434",
-    temperature=0.3,
-    keep_alive= -1
-)
+# Use centralized AI resources
+llm = ai_resources.response_llm
 # Role-based system prompts for schema bot
 ROLE_SYSTEM_PROMPTS_SCHEMA = {
     "developer": """You are a senior software architect and technical expert at GoodBooks Technologies ERP system, specializing in database architecture and schema design.
