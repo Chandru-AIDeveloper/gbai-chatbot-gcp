@@ -432,9 +432,14 @@ class ConversationHistoryManager:
     
     def load_threads(self):
         try:
-            logger.info("Loading threads from Firestore...")
+            logger.info("Loading recent threads from Firestore...")
             threads_ref = db.collection('conversation_threads')
-            for doc in threads_ref.stream():
+            
+            # Load only recent 100 threads to speed up startup
+            # Older threads will be loaded on-demand when accessed
+            docs = threads_ref.order_by('updated_at', direction=firestore.Query.DESCENDING).limit(100).stream()
+            
+            for doc in docs:
                 thread_data = doc.to_dict()
                 if not thread_data: 
                     continue
@@ -448,9 +453,10 @@ class ConversationHistoryManager:
                 thread.messages = thread_data.get("messages", [])
                 thread.is_active = thread_data.get("is_active", True)
                 self.threads[thread_data.get("thread_id")] = thread
-            logger.info(f"Loaded {len(self.threads)} threads from Firestore.")
+            logger.info(f"✅ Loaded {len(self.threads)} recent threads from Firestore")
         except Exception as e:
             logger.error(f"Failed to load threads from Firestore: {e}", exc_info=True)
+            self.threads = {}
 
     def save_threads(self):
         try:
@@ -518,7 +524,8 @@ class ConversationHistoryManager:
                 deleted_count += 1
             logger.info(f"Cleaned up {deleted_count} old threads")
 
-history_manager = ConversationHistoryManager()
+# Initialize as None - will be loaded at startup
+history_manager = None
 
 # ===========================
 # MEMORY SYSTEM
@@ -644,12 +651,9 @@ class EnhancedConversationalMemory:
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["OMP_NUM_THREADS"] = "2"
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2", 
-    model_kwargs={'device': 'cpu'}, 
-    encode_kwargs={'batch_size': 1}
-)
-enhanced_memory = EnhancedConversationalMemory(MEMORY_VECTORSTORE_PATH, "metadata.json", embeddings)
+# Initialize as None - will be loaded at startup
+embeddings = None
+enhanced_memory = None
 
 # ===========================
 # BOT WRAPPERS (WITH ENHANCED LOGGING)
@@ -1367,7 +1371,8 @@ For example: "Name: John, Role: developer" """
             "user_role": user_role
         }
 
-ai_orchestrator = AIOrchestrationAgent()
+# Initialize as None - will be loaded at startup
+ai_orchestrator = None
 
 # ===========================
 # Helper Functions
@@ -1474,16 +1479,8 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
-        
-        # ✅ Map roleid to role name if present, otherwise fallback to "Role"
-        role_id = str(login_dto.get("roleid", ""))
-        user_role = ROLEID_TO_NAME.get(role_id, login_dto.get("Role", "client")).lower()
     except Exception:
-        return JSONResponse(status_code=400, content={"response": "Invalid login header. Must include UserName and Role"})
-    
-    valid_roles = ["developer", "implementation", "marketing", "client", "admin", "system admin", "manager", "sales"]
-    if user_role not in valid_roles:
-        return JSONResponse(status_code=400, content={"response": f"Invalid role. Must be one of: {', '.join(valid_roles)}"})
+        return JSONResponse(status_code=400, content={"response": "Invalid login header. Must include UserName"})
     
     user_input = message.content.strip()
     
@@ -1491,13 +1488,19 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
         return JSONResponse(status_code=400, content={"response": "Please provide a message"})
     
     try:
-        # For greetings, don't create thread immediately to save time
+        # Check if user has role in session (don't auto-assign from header)
+        session_info = user_sessions.get(username, {})
+        user_role = session_info.get("current_role", "unknown")
+        
+        # For greetings, respond immediately without creating thread
         if is_greeting(user_input):
             result = await ai_orchestrator.process_request(username, user_role, user_input, None)
-            # Create thread in background after response
+            # Create thread in background AFTER response
             if result.get("thread_id") is None:
-                thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
-                result["thread_id"] = thread_id
+                asyncio.create_task(asyncio.to_thread(
+                    lambda: result.update({"thread_id": history_manager.create_new_thread(username, user_input)})
+                ))
+            return result
         else:
             thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
             result = await ai_orchestrator.process_request(username, user_role, user_input, thread_id)
@@ -1521,16 +1524,8 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
-        
-        # ✅ Map roleid to role name if present, otherwise fallback to "Role"
-        role_id = str(login_dto.get("roleid", ""))
-        user_role = ROLEID_TO_NAME.get(role_id, login_dto.get("Role", "client")).lower()
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
-    
-    valid_roles = ["developer", "implementation", "marketing", "client", "admin", "system admin", "manager", "sales"]
-    if user_role not in valid_roles:
-        return JSONResponse(status_code=400, content={"response": f"Invalid role. Must be one of: {', '.join(valid_roles)}"})
     
     thread_id = request.thread_id
     user_input = request.message.strip()
@@ -1538,6 +1533,11 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
     if not user_input:
         return JSONResponse(status_code=400, content={"response": "Please provide a message"})
     
+    # Check if user has role in session (don't auto-assign from header)
+    session_info = user_sessions.get(username, {})
+    user_role = session_info.get("current_role", "unknown")
+    
+    # Verify thread exists and belongs to user
     if thread_id:
         thread = history_manager.get_thread(thread_id)
         if not thread or thread.username != username:
@@ -1947,11 +1947,36 @@ async def health_check():
 # ===========================
 @app.on_event("startup")
 async def startup_event():
+    global history_manager, embeddings, enhanced_memory, ai_orchestrator
+    
     logger.info("=" * 80)
     logger.info("🚀 GoodBooks AI Orchestrator starting")
     logger.info("=" * 80)
 
     try:
+        # --------------------------------------------------
+        # 🔥 INITIALIZE HEAVY COMPONENTS FIRST
+        # --------------------------------------------------
+        logger.info("📦 Loading embeddings model...")
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2", 
+            model_kwargs={'device': 'cpu'}, 
+            encode_kwargs={'batch_size': 1}
+        )
+        logger.info("✅ Embeddings loaded")
+        
+        logger.info("💾 Loading conversation memory from GCS...")
+        enhanced_memory = EnhancedConversationalMemory(MEMORY_VECTORSTORE_PATH, "metadata.json", embeddings)
+        logger.info("✅ Memory loaded")
+        
+        logger.info("📚 Loading conversation threads from Firestore...")
+        history_manager = ConversationHistoryManager()
+        logger.info("✅ Threads loaded")
+        
+        logger.info("🤖 Initializing AI orchestrator...")
+        ai_orchestrator = AIOrchestrationAgent()
+        logger.info("✅ Orchestrator ready")
+
         # --------------------------------------------------
         # 🔥 WARM OLLAMA MODELS (GPU LOAD)
         # --------------------------------------------------
@@ -1960,22 +1985,23 @@ async def startup_event():
             ai_orchestrator.routing_llm.ainvoke("hello"),
             ai_orchestrator.response_llm.ainvoke("Reply OK")
         )
-
         logger.info("✅ Ollama models warmed")
 
         # --------------------------------------------------
-        # 📦 FORCE FAISS INTO MEMORY
+        # 📦 FORCE FAISS INTO MEMORY (if exists)
         # --------------------------------------------------
-        logger.info("📦 Loading FAISS vectorstore...")
-        _ = enhanced_memory.memory_vectorstore
-        enhanced_memory.memory_vectorstore.similarity_search("warmup", k=1)
-        logger.info("✅ FAISS ready")
+        if enhanced_memory and enhanced_memory.memory_vectorstore:
+            logger.info("📦 Warming FAISS index...")
+            try:
+                enhanced_memory.memory_vectorstore.similarity_search("warmup", k=1)
+                logger.info("✅ FAISS warmed")
+            except Exception as e:
+                logger.warning(f"⚠️ FAISS warming failed: {e}")
 
         # --------------------------------------------------
         # 🧪 REAL QUERY DRY RUN (MOST IMPORTANT)
         # --------------------------------------------------
         logger.info("🧪 Running real-query warmup...")
-
         await ai_orchestrator.process_request(
             username="__warmup__",
             user_role="client",
@@ -1983,7 +2009,6 @@ async def startup_event():
             thread_id=None,
             is_existing_thread=False
         )
-
         logger.info("✅ Real-query warmup completed")
 
         # --------------------------------------------------
@@ -2015,12 +2040,13 @@ async def startup_event():
             asyncio.to_thread(history_manager.cleanup_old_threads, 180)
         )
 
-    except Exception as e:
-        logger.error(f"⚠️ Startup warmup error: {e}")
+        logger.info("=" * 80)
+        logger.info("✅ ALL SYSTEMS READY - App startup complete")
+        logger.info("=" * 80)
 
-    logger.info("=" * 80)
-    logger.info("🎉 Server READY — no cold start expected")
-    logger.info("=" * 80)
+    except Exception as e:
+        logger.error(f"❌ STARTUP FAILED: {str(e)}", exc_info=True)
+        raise
     
 @app.on_event("shutdown")
 async def shutdown_event():
