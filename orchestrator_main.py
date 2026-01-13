@@ -1196,29 +1196,71 @@ Rewritten Answer:"""
             logger.error(f"❌ Role perspective error: {e}")
             return answer
     
-    async def process_request(self, username: str, user_role: str, question: str, 
+    async def process_request(self, username: str, user_role: str, question: str,
                             thread_id: str = None, is_existing_thread: bool = False) -> Dict[str, str]:
         """Enhanced request processing with comprehensive fallback chain"""
-        
+
         start_time = time.time()
         logger.info("="*80)
         logger.info(f"🚀 NEW REQUEST from {username} (Role: {user_role})")
         logger.info(f"💬 Question: {question}")
         logger.info("="*80)
-        
+
+        # Check if user has set their role, if not prompt for it
+        session_info = user_sessions.get(username, {})
+        current_role = session_info.get("current_role")
+        user_name = session_info.get("name")
+
+        if not current_role:
+            # Parse if user provided name and role
+            parsed_name, parsed_role = parse_name_and_role(question)
+            if parsed_role:
+                # User provided role, set it
+                asyncio.create_task(asyncio.to_thread(update_user_session, username, parsed_name, parsed_role))
+                user_role = parsed_role
+                user_name = parsed_name
+                logger.info(f"🎭 User set role to: {user_role}, name: {user_name}")
+                confirmation = f"Hello {user_name if user_name else username}! I've set your role to {user_role}. How can I help you with GoodBooks ERP today?"
+                return {
+                    "response": confirmation,
+                    "bot_type": "role_setup",
+                    "thread_id": thread_id,
+                    "user_role": user_role
+                }
+            else:
+                # Ask for name and role
+                prompt = """Hello! I'm your GoodBooks ERP assistant. To provide you with the best help, please tell me your name and role.
+
+Please reply in this format: "Name: [Your Name], Role: [your role]"
+
+Available roles: developer, implementation, marketing, client, admin, system admin, manager, sales
+
+For example: "Name: John, Role: developer" """
+
+                return {
+                    "response": prompt,
+                    "bot_type": "role_prompt",
+                    "thread_id": thread_id,
+                    "user_role": "client"  # Default until set
+                }
+
+        # Use the stored role
+        user_role = current_role
+
         asyncio.create_task(asyncio.to_thread(update_user_session, username))
-        
+
         if is_greeting(question):
             logger.info(f"⚡ INSTANT greeting response (0.0s)")
             greeting_response = get_greeting_response(user_role)
-            
+
+            # Skip all slow operations for greetings - do them in background
             asyncio.create_task(
                 asyncio.to_thread(
                     enhanced_memory.store_conversation_turn,
                     username, question, greeting_response, "greeting", user_role, thread_id
                 )
             )
-            
+
             if thread_id:
                 asyncio.create_task(
                     asyncio.to_thread(
@@ -1226,7 +1268,8 @@ Rewritten Answer:"""
                         thread_id, question, greeting_response, "greeting"
                     )
                 )
-            
+
+            # Return immediately without waiting for background tasks
             return {
                 "response": greeting_response,
                 "bot_type": "greeting",
@@ -1329,11 +1372,33 @@ ai_orchestrator = AIOrchestrationAgent()
 # ===========================
 # Helper Functions
 # ===========================
-def update_user_session(username: str):
+def parse_name_and_role(message: str) -> tuple[str, str]:
+    """Parse name and role from user message. Expected format: 'Name: John, Role: developer'"""
+    import re
+    name = None
+    role = None
+
+    # Case insensitive matching
+    name_match = re.search(r'name\s*:\s*([^\s,]+)', message, re.IGNORECASE)
+    role_match = re.search(r'role\s*:\s*([^\s,]+)', message, re.IGNORECASE)
+
+    if name_match:
+        name = name_match.group(1).strip()
+    if role_match:
+        role = role_match.group(1).strip().lower()
+
+    # Validate role
+    valid_roles = ["developer", "implementation", "marketing", "client", "admin", "system admin", "manager", "sales"]
+    if role and role not in valid_roles:
+        role = None  # Invalid role, set to None
+
+    return name, role
+
+def update_user_session(username: str, name: str = None, current_role: str = None):
     """Update user session - now non-blocking"""
     try:
         current_time = datetime.now().isoformat()
-        
+
         session_ref = db.collection('user_sessions').document(username)
         session_doc = session_ref.get()
 
@@ -1342,13 +1407,19 @@ def update_user_session(username: str):
                 "first_seen": current_time,
                 "last_activity": current_time,
                 "session_count": 1,
-                "total_interactions": 1
+                "total_interactions": 1,
+                "name": name,
+                "current_role": current_role
             }
         else:
             user_session_data = session_doc.to_dict()
             user_session_data["last_activity"] = current_time
             user_session_data["total_interactions"] = user_session_data.get("total_interactions", 0) + 1
-        
+            if name is not None:
+                user_session_data["name"] = name
+            if current_role is not None:
+                user_session_data["current_role"] = current_role
+
         session_ref.set(user_session_data)
         user_sessions[username] = user_session_data
     except Exception as e:
@@ -1420,9 +1491,17 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
         return JSONResponse(status_code=400, content={"response": "Please provide a message"})
     
     try:
-        thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
-        result = await ai_orchestrator.process_request(username, user_role, user_input, thread_id)
-        
+        # For greetings, don't create thread immediately to save time
+        if is_greeting(user_input):
+            result = await ai_orchestrator.process_request(username, user_role, user_input, None)
+            # Create thread in background after response
+            if result.get("thread_id") is None:
+                thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
+                result["thread_id"] = thread_id
+        else:
+            thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
+            result = await ai_orchestrator.process_request(username, user_role, user_input, thread_id)
+
         logger.info(f"✅ Response sent to {username} ({user_role})")
         return result
         
