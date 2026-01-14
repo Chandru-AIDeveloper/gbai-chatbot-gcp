@@ -394,6 +394,8 @@ class ConversationThread:
         self.updated_at = datetime.now().isoformat()
         self.messages = []
         self.is_active = True
+        self.user_role = None
+        self.user_name = None
         
     def add_message(self, user_message: str, bot_response: str, bot_type: str):
         message = {
@@ -422,7 +424,9 @@ class ConversationThread:
             "updated_at": self.updated_at,
             "messages": self.messages,
             "is_active": self.is_active,
-            "message_count": len(self.messages)
+            "message_count": len(self.messages),
+            "user_role": self.user_role,
+            "user_name": self.user_name
         }
 
 class ConversationHistoryManager:
@@ -452,6 +456,8 @@ class ConversationHistoryManager:
                 thread.updated_at = thread_data.get("updated_at")
                 thread.messages = thread_data.get("messages", [])
                 thread.is_active = thread_data.get("is_active", True)
+                thread.user_role = thread_data.get("user_role")
+                thread.user_name = thread_data.get("user_name")
                 self.threads[thread_data.get("thread_id")] = thread
             logger.info(f"✅ Loaded {len(self.threads)} recent threads from Firestore")
         except Exception as e:
@@ -1210,20 +1216,26 @@ Rewritten Answer:"""
         logger.info(f"💬 Question: {question}")
         logger.info("="*80)
 
-        # Check if user has set their role, if not prompt for it
-        session_info = user_sessions.get(username, {})
-        current_role = session_info.get("current_role")
-        user_name = session_info.get("name")
+        # Check if thread has role set, if not prompt for it
+        thread = None
+        if thread_id:
+            thread = history_manager.get_thread(thread_id)
+        
+        current_role = thread.user_role if thread else None
+        user_name_stored = thread.user_name if thread else None
 
         if not current_role:
             # Parse if user provided name and role
             parsed_name, parsed_role = parse_name_and_role(question)
             if parsed_role:
-                # User provided role, set it
-                asyncio.create_task(asyncio.to_thread(update_user_session, username, parsed_name, parsed_role))
+                # User provided role, set it in thread
                 user_role = parsed_role
                 user_name = parsed_name
-                logger.info(f"🎭 User set role to: {user_role}, name: {user_name}")
+                if thread:
+                    thread.user_role = user_role
+                    thread.user_name = user_name
+                    history_manager.save_threads()
+                logger.info(f"🎭 User set role to: {user_role}, name: {user_name} for thread {thread_id}")
                 confirmation = f"Hello {user_name if user_name else username}! I've set your role to {user_role}. How can I help you with GoodBooks ERP today?"
                 return {
                     "response": confirmation,
@@ -1248,10 +1260,8 @@ For example: "Name: John, Role: developer" """
                     "user_role": "client"  # Default until set
                 }
 
-        # Use the stored role
+        # Use the stored role from thread
         user_role = current_role
-
-        asyncio.create_task(asyncio.to_thread(update_user_session, username))
 
         if is_greeting(question):
             logger.info(f"⚡ INSTANT greeting response (0.0s)")
