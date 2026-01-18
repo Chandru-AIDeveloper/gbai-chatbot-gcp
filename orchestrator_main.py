@@ -21,7 +21,7 @@ from google.cloud import firestore
 from google.cloud import storage
 from concurrent.futures import ThreadPoolExecutor
 from shared_resources import ai_resources
-
+s
 # Import bot modules
 try:
     import formula_bot
@@ -618,19 +618,54 @@ class EnhancedConversationalMemory:
     
     def retrieve_contextual_memories(self, username: str, query: str, k: int = 3, thread_id: str = None, thread_isolation: bool = False) -> List[Dict]:
         try:
-            docs = self.memory_vectorstore.similarity_search(query, k=k * 2)
+            # Enhanced memory retrieval with multiple strategies
+            all_docs = []
+
+            # Primary search with original query
+            docs = self.memory_vectorstore.similarity_search(query, k=k * 3)
+            all_docs.extend(docs)
+
+            # Secondary search with simplified query for broader matching
+            if len(query.split()) > 4:
+                simplified_query = " ".join(query.split()[:4])  # First 4 words
+                try:
+                    simplified_docs = self.memory_vectorstore.similarity_search(simplified_query, k=k)
+                    all_docs.extend(simplified_docs)
+                except Exception as e:
+                    logger.warning(f"Simplified query search failed: {e}")
+
+            # Tertiary search with keywords only
+            keywords = [word for word in query.lower().split() if len(word) > 3 and word not in ['what', 'how', 'when', 'where', 'why', 'which', 'that', 'this', 'there', 'here']]
+            if keywords:
+                keyword_query = " ".join(keywords[:3])  # Top 3 keywords
+                try:
+                    keyword_docs = self.memory_vectorstore.similarity_search(keyword_query, k=k)
+                    all_docs.extend(keyword_docs)
+                except Exception as e:
+                    logger.warning(f"Keyword query search failed: {e}")
 
             user_memories = {}
-            for doc in docs:
+            seen_memories = set()
+
+            for doc in all_docs:
                 if (doc.metadata.get("username") == username and
                     doc.metadata.get("memory_id") != "init"):
-                    
+
                     if thread_isolation and thread_id:
                         if doc.metadata.get("thread_id") != thread_id:
                             continue
-                    
+
                     memory_id = doc.metadata.get("memory_id")
+
+                    # Deduplication based on content similarity
+                    content_hash = hash(doc.page_content[:300])  # First 300 chars
+                    if content_hash in seen_memories:
+                        continue
+                    seen_memories.add(content_hash)
+
                     if memory_id not in user_memories:
+                        # Enhanced memory object with relevance scoring
+                        relevance_score = self._calculate_memory_relevance(doc, query, thread_id)
                         user_memories[memory_id] = {
                             "memory_id": memory_id,
                             "timestamp": doc.metadata.get("timestamp"),
@@ -639,20 +674,60 @@ class EnhancedConversationalMemory:
                             "bot_type": doc.metadata.get("bot_type"),
                             "user_role": doc.metadata.get("user_role"),
                             "thread_id": doc.metadata.get("thread_id"),
-                            "content": doc.page_content
+                            "content": doc.page_content,
+                            "relevance_score": relevance_score
                         }
-            
+
+            # Sort by relevance score, then by recency
             sorted_memories = sorted(
                 user_memories.values(),
-                key=lambda x: x["timestamp"],
+                key=lambda x: (x["relevance_score"], x["timestamp"]),
                 reverse=True
             )
-            
-            return sorted_memories[:k]
-            
+
+            # Return top k memories
+            top_memories = sorted_memories[:k]
+            logger.info(f"Enhanced memory retrieval: {len(top_memories)} memories from {len(all_docs)} candidates")
+            return top_memories
+
         except Exception as e:
             logger.error(f"Error retrieving memories: {e}")
             return []
+
+    def _calculate_memory_relevance(self, doc, query: str, current_thread_id: str = None) -> float:
+        """Calculate relevance score for memory based on multiple factors"""
+        score = 0.0
+
+        # Base similarity score (from vector search)
+        score += 1.0
+
+        # Thread continuity bonus
+        if current_thread_id and doc.metadata.get("thread_id") == current_thread_id:
+            score += 0.5
+
+        # Recency bonus (newer memories get slight preference)
+        try:
+            memory_time = datetime.fromisoformat(doc.metadata.get("timestamp", "").replace('Z', '+00:00'))
+            hours_old = (datetime.now() - memory_time).total_seconds() / 3600
+            if hours_old < 24:
+                score += 0.3
+            elif hours_old < 168:  # 1 week
+                score += 0.1
+        except:
+            pass
+
+        # Query term matching bonus
+        query_terms = set(query.lower().split())
+        memory_content = doc.page_content.lower()
+        matching_terms = query_terms.intersection(set(memory_content.split()))
+        if matching_terms:
+            score += len(matching_terms) * 0.1
+
+        # Bot type consistency bonus (prefer same bot type for continuity)
+        # This will be set by the calling context
+        score += 0.0  # Placeholder for future enhancement
+
+        return score
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["OMP_NUM_THREADS"] = "2"
@@ -660,6 +735,165 @@ os.environ["OMP_NUM_THREADS"] = "2"
 # Initialize as None - will be loaded at startup
 embeddings = None
 enhanced_memory = None
+
+# ===========================
+# SHARED CONTEXT REGISTRY SYSTEM
+# ===========================
+class SharedContextRegistry:
+    """Registry for sharing context between bots to enable cross-bot continuity"""
+
+    def __init__(self):
+        self.context_store = {}  # {username: {bot_type: {context_key: context_data}}}
+        self.max_context_age = 3600  # 1 hour in seconds
+        self.max_contexts_per_bot = 10
+
+    def store_bot_context(self, username: str, bot_type: str, context_key: str, context_data: Dict):
+        """Store context from a bot for potential sharing with other bots"""
+        if username not in self.context_store:
+            self.context_store[username] = {}
+
+        if bot_type not in self.context_store[username]:
+            self.context_store[username][bot_type] = {}
+
+        # Add timestamp for context aging
+        context_data['_timestamp'] = time.time()
+        context_data['_bot_type'] = bot_type
+
+        # Store context with key
+        self.context_store[username][bot_type][context_key] = context_data
+
+        # Limit number of contexts per bot to prevent memory bloat
+        if len(self.context_store[username][bot_type]) > self.max_contexts_per_bot:
+            # Remove oldest context
+            oldest_key = min(
+                self.context_store[username][bot_type].keys(),
+                key=lambda k: self.context_store[username][bot_type][k]['_timestamp']
+            )
+            del self.context_store[username][bot_type][oldest_key]
+
+        logger.info(f"📚 Stored context '{context_key}' for {username}:{bot_type}")
+
+    def get_relevant_contexts(self, username: str, current_bot_type: str, query: str, max_contexts: int = 3) -> List[Dict]:
+        """Get relevant contexts from other bots that might help with the current query"""
+        if username not in self.context_store:
+            return []
+
+        relevant_contexts = []
+        current_time = time.time()
+
+        # Define bot relationships for context sharing
+        bot_relationships = {
+            "general": ["report", "menu", "project"],  # General can benefit from specific bot contexts
+            "report": ["general", "menu"],  # Reports often relate to navigation and general info
+            "menu": ["general", "report"],  # Menu navigation relates to reports and general features
+            "formula": ["general", "report"],  # Formulas might relate to reports and general calculations
+            "project": ["general", "report"]  # Projects can benefit from general and report contexts
+        }
+
+        related_bots = bot_relationships.get(current_bot_type, [])
+
+        for bot_type in related_bots:
+            if bot_type not in self.context_store[username]:
+                continue
+
+            # Get contexts from related bot, sorted by recency
+            bot_contexts = self.context_store[username][bot_type]
+            sorted_contexts = sorted(
+                bot_contexts.items(),
+                key=lambda x: x[1]['_timestamp'],
+                reverse=True
+            )
+
+            for context_key, context_data in sorted_contexts:
+                # Check if context is still fresh
+                if current_time - context_data['_timestamp'] > self.max_context_age:
+                    continue
+
+                # Calculate relevance to current query
+                relevance_score = self._calculate_context_relevance(context_data, query)
+
+                if relevance_score > 0.3:  # Minimum relevance threshold
+                    relevant_contexts.append({
+                        'bot_type': bot_type,
+                        'context_key': context_key,
+                        'context_data': context_data,
+                        'relevance_score': relevance_score
+                    })
+
+        # Sort by relevance and return top contexts
+        relevant_contexts.sort(key=lambda x: x['relevance_score'], reverse=True)
+        top_contexts = relevant_contexts[:max_contexts]
+
+        logger.info(f"🔗 Found {len(top_contexts)} relevant cross-bot contexts for {username}:{current_bot_type}")
+        return top_contexts
+
+    def _calculate_context_relevance(self, context_data: Dict, query: str) -> float:
+        """Calculate how relevant a stored context is to the current query"""
+        score = 0.0
+
+        # Remove metadata fields for relevance calculation
+        clean_context = {k: v for k, v in context_data.items() if not k.startswith('_')}
+
+        # Convert context to searchable text
+        context_text = " ".join(str(v) for v in clean_context.values() if isinstance(v, (str, int, float)))
+        context_text = context_text.lower()
+        query_lower = query.lower()
+
+        # Keyword matching
+        query_words = set(query_lower.split())
+        context_words = set(context_text.split())
+
+        # Exact word matches
+        exact_matches = len(query_words.intersection(context_words))
+        score += exact_matches * 0.2
+
+        # Partial word matches (contains)
+        partial_matches = 0
+        for q_word in query_words:
+            if any(q_word in c_word or c_word in q_word for c_word in context_words):
+                partial_matches += 1
+        score += partial_matches * 0.1
+
+        # Topic similarity based on bot type
+        bot_type = context_data.get('_bot_type', '')
+        if bot_type == 'report' and any(word in query_lower for word in ['data', 'report', 'analysis', 'chart']):
+            score += 0.3
+        elif bot_type == 'menu' and any(word in query_lower for word in ['find', 'where', 'navigate', 'screen']):
+            score += 0.3
+        elif bot_type == 'project' and any(word in query_lower for word in ['project', 'task', 'milestone']):
+            score += 0.3
+
+        return min(score, 1.0)  # Cap at 1.0
+
+    def cleanup_old_contexts(self):
+        """Remove contexts older than max_context_age"""
+        current_time = time.time()
+        cleaned_count = 0
+
+        for username in list(self.context_store.keys()):
+            for bot_type in list(self.context_store[username].keys()):
+                contexts_to_remove = []
+                for context_key, context_data in self.context_store[username][bot_type].items():
+                    if current_time - context_data['_timestamp'] > self.max_context_age:
+                        contexts_to_remove.append(context_key)
+
+                for context_key in contexts_to_remove:
+                    del self.context_store[username][bot_type][context_key]
+                    cleaned_count += 1
+
+                # Remove empty bot types
+                if not self.context_store[username][bot_type]:
+                    del self.context_store[username][bot_type]
+
+            # Remove empty users
+            if not self.context_store[username]:
+                del self.context_store[username]
+
+        if cleaned_count > 0:
+            logger.info(f"🧹 Cleaned up {cleaned_count} old contexts from registry")
+
+# Initialize shared context registry
+shared_context_registry = SharedContextRegistry()
 
 # ===========================
 # BOT WRAPPERS (WITH ENHANCED LOGGING)
@@ -1302,7 +1536,30 @@ For example: "Name: John, Role: developer" """
                 username, question, k=3, thread_id=thread_id, thread_isolation=False
             )
             context = build_conversational_context(username, question, thread_id, thread_isolation=False)
-        
+
+        # 🔗 ENHANCED: Add cross-bot context sharing
+        cross_bot_contexts = shared_context_registry.get_relevant_contexts(username, intent, question)
+        if cross_bot_contexts:
+            context_parts = [context] if context else []
+
+            context_parts.append("=== Cross-Bot Context (Related Information) ===")
+            for ctx in cross_bot_contexts[:2]:  # Limit to top 2 most relevant
+                bot_type = ctx['bot_type']
+                context_key = ctx['context_key']
+                context_parts.append(f"From {bot_type} bot - {context_key}:")
+                # Include key context data, but limit length
+                ctx_data = ctx['context_data']
+                relevant_info = []
+                for key, value in ctx_data.items():
+                    if not key.startswith('_') and isinstance(value, (str, int, float)):
+                        str_value = str(value)[:100]  # Limit value length
+                        relevant_info.append(f"  {key}: {str_value}")
+                context_parts.extend(relevant_info[:3])  # Limit to 3 key-value pairs
+                context_parts.append("")
+
+            context = "\n".join(context_parts)
+            logger.info(f"🔗 Added {len(cross_bot_contexts)} cross-bot contexts")
+
         logger.info(f"📚 Retrieved {len(recent_memories)} contextual memories")
         
         logger.info("🎯 Detecting intent...")

@@ -431,7 +431,11 @@ Assistant:"""
         # Clean and format response
         cleaned_answer = answer.strip()
         
-        return {"response": cleaned_answer}
+        return {
+            "response": cleaned_answer,
+            "source_file": "database_schema_documentation.txt",
+            "bot_name": "Schema Bot"
+        }
         
     except Exception as e:
         logger.error(f"Schema bot error: {e}")

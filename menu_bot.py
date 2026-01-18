@@ -194,7 +194,7 @@ Your identity and style:
 Remember: You are the complete expert providing full menu system knowledge and administration."""
 }
 
-# ✅ UPDATED: Enhanced prompt with orchestrator context
+# ✅ UPDATED: Enhanced prompt with cross-bot context awareness
 prompt_template = """
 {role_system_prompt}
 [ROLE]
@@ -203,18 +203,23 @@ You act as a continuous, context-aware assistant within an ongoing conversation.
 
 [TASK]
 Answer user questions related to the GoodBooks Menu clearly, naturally, and professionally,
-while maintaining continuity with previous messages.
+while maintaining continuity with previous messages and leveraging cross-bot context.
 
 [CONTEXT CONTINUITY RULES]
 - Treat the conversation as ongoing, not isolated
-- Use conversation history and orchestrator context to resolve references like
-  "this", "that", "same menu", or "previous option"
+- Use conversation history, orchestrator context, and cross-bot context to resolve references
+- Cross-reference with related information from other bots when relevant
+- Resolve references like "this", "that", "same menu", or "previous option"
 - Do not repeat information unless it adds value
 - Maintain consistent terminology throughout the conversation
 
 [ORCHESTRATOR CONTEXT]
 Conversation context from the current session:
 {orchestrator_context}
+
+[CROSS-BOT CONTEXT]
+Related information from other bots (reports, general, projects):
+{cross_bot_context}
 
 [MENU CONTEXT]
 Use the Menu information below as the primary source of truth:
@@ -225,8 +230,9 @@ Previous messages in this conversation:
 {history}
 
 [REASONING GUIDELINES]
-- First, understand the user's intent using the orchestrator context and conversation history
+- First, understand the user's intent using all available context sources
 - Carefully analyze the provided Menu context
+- Cross-reference with cross-bot context for more complete navigation guidance
 - If the answer exists, summarize it clearly and conversationally
 - If the answer is partially available, respond only with supported information
 - Never assume or invent missing Menu details
@@ -235,6 +241,7 @@ Previous messages in this conversation:
 - Provide a clear, concise, and professional response
 - Maintain natural conversational flow
 - Keep the answer focused on Menu-related information
+- Leverage cross-bot context to provide more comprehensive navigation guidance
 - Avoid unnecessary repetition
 
 [FAIL-SAFE CONDITION]
@@ -292,8 +299,23 @@ async def chat(message: Message, Login: str = Header(...)):
             # Get role-specific system prompt
             role_system_prompt = ROLE_SYSTEM_PROMPTS_MENU.get(user_role, ROLE_SYSTEM_PROMPTS_MENU["client"])
 
+            # Extract cross-bot context from orchestrator_context if available
+            cross_bot_context = ""
+            if orchestrator_context and "=== Cross-Bot Context" in orchestrator_context:
+                # Extract the cross-bot context section
+                cross_bot_start = orchestrator_context.find("=== Cross-Bot Context")
+                if cross_bot_start != -1:
+                    cross_bot_end = orchestrator_context.find("===", cross_bot_start + 1)
+                    if cross_bot_end == -1:
+                        cross_bot_context = orchestrator_context[cross_bot_start:]
+                    else:
+                        cross_bot_context = orchestrator_context[cross_bot_start:cross_bot_end]
+                # Remove cross-bot context from orchestrator_context to avoid duplication
+                orchestrator_context = orchestrator_context.replace(cross_bot_context, "").strip()
+
             prompt_text = prompt_template.format(
                 role_system_prompt=role_system_prompt,
+                cross_bot_context=cross_bot_context if cross_bot_context else "No related context from other bots",
                 orchestrator_context=orchestrator_context if orchestrator_context else "No prior context",
                 context=context_str,
                 history=history_str,
@@ -313,7 +335,11 @@ async def chat(message: Message, Login: str = Header(...)):
         cleaned_answer = clean_response(answer)
         formatted_answer = format_as_points(cleaned_answer)
        
-        return {"response": formatted_answer}
+        return {
+            "response": formatted_answer,
+            "source_file": "menu.csv",
+            "bot_name": "Menu Bot"
+        }
        
     except Exception as e:
         logger.error(f"❌ Chat error: {traceback.format_exc()}")
