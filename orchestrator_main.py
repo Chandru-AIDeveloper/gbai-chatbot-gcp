@@ -21,7 +21,7 @@ from google.cloud import firestore
 from google.cloud import storage
 from concurrent.futures import ThreadPoolExecutor
 from shared_resources import ai_resources
-s
+
 # Import bot modules
 try:
     import formula_bot
