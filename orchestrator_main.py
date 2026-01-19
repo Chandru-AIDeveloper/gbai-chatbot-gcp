@@ -1830,6 +1830,13 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
             username, user_role, user_input, thread_id, is_existing_thread=True
         )
         
+        # Update session with thread info and check if user just registered
+        if result.get("bot_type") == "role_setup":
+            session_info["registered"] = True
+            session_info["current_role"] = result.get("user_role", "client")
+        session_info["last_thread_id"] = thread_id
+        user_sessions[login_dto_str] = session_info
+        
         logger.info(f"✅ Thread response sent to {username} ({user_role})")
         return result
         
