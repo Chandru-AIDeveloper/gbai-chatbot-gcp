@@ -1755,22 +1755,34 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
         return JSONResponse(status_code=400, content={"response": "Please provide a message"})
     
     try:
-        # Check if user has role in session (don't auto-assign from header)
-        session_info = user_sessions.get(username, {})
+        # Use login_dto as session key to maintain session state across requests
+        login_dto_str = json.dumps(login_dto, sort_keys=True)
+        session_info = user_sessions.get(login_dto_str, {})
         user_role = session_info.get("current_role", "unknown")
+        is_registered = session_info.get("registered", False)
         
         # For greetings, respond immediately without creating thread
         if is_greeting(user_input):
             result = await ai_orchestrator.process_request(username, user_role, user_input, None)
-            # Create thread in background AFTER response
+            # Create thread in background AFTER response if needed
             if result.get("thread_id") is None:
-                asyncio.create_task(asyncio.to_thread(
-                    lambda: result.update({"thread_id": history_manager.create_new_thread(username, user_input)})
-                ))
+                thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
+                result["thread_id"] = thread_id
+                # Update session with thread info
+                session_info["last_thread_id"] = thread_id
+                user_sessions[login_dto_str] = session_info
             return result
         else:
+            # Create new thread for new conversation
             thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
             result = await ai_orchestrator.process_request(username, user_role, user_input, thread_id)
+            
+            # Update session with thread info and check if user just registered
+            if result.get("bot_type") == "role_setup":
+                session_info["registered"] = True
+                session_info["current_role"] = result.get("user_role", "client")
+            session_info["last_thread_id"] = thread_id
+            user_sessions[login_dto_str] = session_info
 
         logger.info(f"✅ Response sent to {username} ({user_role})")
         return result
@@ -1800,8 +1812,9 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
     if not user_input:
         return JSONResponse(status_code=400, content={"response": "Please provide a message"})
     
-    # Check if user has role in session (don't auto-assign from header)
-    session_info = user_sessions.get(username, {})
+    # Use login_dto as session key for consistency
+    login_dto_str = json.dumps(login_dto, sort_keys=True)
+    session_info = user_sessions.get(login_dto_str, {})
     user_role = session_info.get("current_role", "unknown")
     
     # Verify thread exists and belongs to user
@@ -1843,7 +1856,8 @@ async def get_conversation_threads(Login: str = Header(...), limit: int = 50):
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
     
     threads = history_manager.get_user_threads(username, limit)
-    session_info = user_sessions.get(username, {})
+    login_dto_str = json.dumps(login_dto, sort_keys=True)
+    session_info = user_sessions.get(login_dto_str, {})
     
     return {
         "username": username,
