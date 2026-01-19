@@ -26,15 +26,15 @@ from shared_resources import ai_resources
 try:
     import formula_bot
     FORMULA_BOT_AVAILABLE = True
-    logging.info("Formula bot imported successfully")
+    logging.info( "Formula bot imported successfully")
 except ImportError as e:
     FORMULA_BOT_AVAILABLE = False
-    logging.warning(f"Formula bot not available: {e}")
+    logging.warning( f"Formula bot not available: {e}")
 
 try:
     import report_bot
     REPORT_BOT_AVAILABLE = True
-    logging.info("Report bot imported successfully")
+    logging.info( "Report bot imported successfully")
 except ImportError as e:
     REPORT_BOT_AVAILABLE = False
     logging.warning(f"Report bot not available: {e}")
@@ -67,7 +67,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # GCP Configuration
-GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
+GCP_PROJECT_ID = os.environ.get( 'GCP_PROJECT_ID')
 GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME')
 db = firestore.Client(project=GCP_PROJECT_ID)
 storage_client = storage.Client(project=GCP_PROJECT_ID)
@@ -95,51 +95,81 @@ class UserRole:
     SALES = "sales"
 
 # ===========================
-# SOURCE TRACKER
+# ===========================
+# SOURCE TRACKER WITH CONTEXT FILTERING
 # ===========================
 class SourceTracker:
-    """Track which sources/files were used to generate responses"""
+    """Track actual sources and filter relevant contexts"""
     
     @staticmethod
-    def extract_sources_from_memory(memories: List[Dict]) -> List[str]:
-        """Extract only file/document names from retrieved memories"""
+    def extract_document_names_from_memory(memories: List[Dict]) -> List[str]:
+        """Extract actual document/file names from memories"""
         sources = []
         for memory in memories:
-            # Extract thread_id or memory_id as the source file name
-            source_name = memory.get("thread_id") or memory.get("memory_id", "unknown_source")
-            if source_name not in sources:
-                sources.append(source_name)
-        return sources
+            # Get the actual document name, not memory_id
+            doc_name = memory.get("source_document", memory.get("document_name", ""))
+            
+            if doc_name and doc_name not in sources:
+                sources.append(doc_name)
+        
+        return sources if sources else ["Default_Knowledge_Base"]
     
     @staticmethod
-    def extract_sources_from_context(context: str) -> List[str]:
-        """Extract source file names mentioned in context"""
-        sources = []
+    def is_memory_relevant_to_query(memory: Dict, user_question: str, 
+                                     relevance_threshold: float = 0.7) -> bool:
+        """Check if memory is actually relevant to current question"""
+        relevance_score = memory.get("relevance_score", 0)
         
-        # Extract thread name from context
-        if "Current Conversation Thread:" in context:
-            thread_match = re.search(r'Current Conversation Thread:\s*(.+?)(?:\n|===)', context)
-            if thread_match:
-                thread_name = thread_match.group(1).strip()
-                if thread_name not in sources:
-                    sources.append(thread_name)
+        # Only use memories with HIGH relevance
+        if relevance_score < relevance_threshold:
+            return False
         
-        # Extract past interactions as a source file
-        if "Related Past Interactions" in context:
-            if "Historical_Interactions" not in sources:
-                sources.append("Historical_Interactions")
+        # Check for question type match
+        memory_question_type = memory.get("question_type", "")
+        current_question_type = extract_question_type(user_question)
         
-        return sources
+        # If question types don't match, skip this memory
+        if memory_question_type and current_question_type:
+            if memory_question_type != current_question_type:
+                return False
+        
+        return True
     
     @staticmethod
-    def format_sources_for_response(context_sources: List[str], memory_sources: List[str]) -> Dict:
-        """Format sources - only file names"""
-        all_sources = list(set(context_sources + memory_sources))  # Remove duplicates
+    def format_sources_for_response(source_files: List[str]) -> Dict:
+        """Format sources - only actual file names"""
+        unique_sources = list(set(source_files))
         
         return {
-            "sources_count": len(all_sources),
-            "sources": all_sources  # Just the file names
+            "sources_count": len(unique_sources),
+            "sources": unique_sources
         }
+
+# ===========================
+# QUESTION TYPE EXTRACTION
+# ===========================
+def extract_question_type(question: str) -> str:
+    """Determine the type/category of question"""
+    question_lower = question.lower()
+    
+    # Configuration questions
+    if any(word in question_lower for word in ["configure", "setup", "set up", "install", "deploy"]):
+        return "configuration"
+    
+    # Module/Feature questions
+    if any(word in question_lower for word in ["module", "feature", "functionality", "capability"]):
+        return "module_feature"
+    
+    # Integration questions
+    if any(word in question_lower for word in ["integrate", "integration", "connect", "api"]):
+        return "integration"
+    
+    # Troubleshooting questions
+    if any(word in question_lower for word in ["error", "issue", "problem", "bug", "not working", "fix"]):
+        return "troubleshooting"
+    
+    # General questions
+    return "general"
 
 # Initialize source tracker
 source_tracker = SourceTracker()
@@ -1252,6 +1282,92 @@ def build_conversational_context(username: str, current_query: str, thread_id: s
     return full_context
 
 # ===========================
+# FILTERED CONTEXT BUILDER
+# ===========================
+async def build_filtered_context(username: str, user_question: str, 
+                                 thread_id: str = None, 
+                                 is_existing_thread: bool = False) -> tuple:
+    """
+    Build context with PROPER FILTERING - only includes relevant data
+    Returns: (filtered_context_string, source_files_used)
+    """
+    
+    # Step 1: Get recent memories with proper thread isolation
+    if is_existing_thread and thread_id:
+        # ONLY get memories from current thread
+        recent_memories = await asyncio.to_thread(
+            enhanced_memory.retrieve_contextual_memories,
+            username, user_question, 5, thread_id, True
+        )
+    else:
+        # Get memories with thread isolation to prevent cross-contamination
+        recent_memories = await asyncio.to_thread(
+            enhanced_memory.retrieve_contextual_memories,
+            username, user_question, 10, thread_id, True
+        )
+    
+    # Step 2: FILTER memories by relevance and question type match
+    filtered_memories = [
+        mem for mem in recent_memories 
+        if source_tracker.is_memory_relevant_to_query(mem, user_question, relevance_threshold=0.75)
+    ]
+    
+    # Step 3: If no highly relevant memories, don't force old history
+    if not filtered_memories:
+        logger.info(f"⚠️  No relevant memories found. Question type: {extract_question_type(user_question)}")
+        source_files = ["Current_Query_Only"]
+        context = f"""
+User: {username}
+Current Question: {user_question}
+Question Type: {extract_question_type(user_question)}
+
+Note: No relevant past interactions found. Answer based on current context only.
+"""
+        return context, source_files
+    
+    # Step 4: Build context from filtered memories only
+    context = f"""
+User: {username}
+Current Question: {user_question}
+Question Type: {extract_question_type(user_question)}
+
+=======================
+RELEVANT PAST INTERACTIONS (Filtered by Relevance):
+=======================
+"""
+    
+    source_files = []
+    
+    # Add current thread context if available
+    if thread_id:
+        thread = history_manager.get_thread(thread_id)
+        if thread and thread.messages:
+            context += f"\n=== Current Thread: {thread.title} ===\n"
+            # Add last 5 messages from thread
+            for msg in thread.messages[-5:]:
+                context += f"Q: {msg.get('user_message', '')[:200]}\n"
+                context += f"A: {msg.get('bot_response', '')[:200]}\n\n"
+    
+    for i, memory in enumerate(filtered_memories[:3], 1):  # Limit to top 3
+        source_file = memory.get("source_document", memory.get("document_name", "Knowledge_Base"))
+        if source_file not in source_files:
+            source_files.append(source_file)
+        
+        context += f"""
+Memory {i}:
+Question: {memory.get('user_message', 'N/A')[:150]}
+Answer: {memory.get('bot_response', 'N/A')[:150]}
+Source: {source_file}
+Relevance Score: {memory.get('relevance_score', 'N/A')}
+---
+"""
+    
+    logger.info(f"📍 Built filtered context from {len(source_files)} source(s)")
+    logger.info(f"📍 Used {len(filtered_memories)} relevant memories")
+    
+    return context, source_files
+
+# ===========================
 # ENHANCED AI ORCHESTRATION AGENT
 # ===========================
 class AIOrchestrationAgent:
@@ -1831,24 +1947,18 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
             # Create new thread for new conversation
             thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
             
-            # 📍 Retrieve memories and context BEFORE processing
-            recent_memories = await asyncio.to_thread(
-                enhanced_memory.retrieve_contextual_memories,
-                username, user_input, 3, thread_id, False
-            )
-            context = await asyncio.to_thread(
-                build_conversational_context,
-                username, user_input, thread_id, False
+            # 📍 BUILD FILTERED CONTEXT (NOT raw past history)
+            context, source_files = await build_filtered_context(
+                username, user_input, thread_id=thread_id, is_existing_thread=False
             )
             
-            # 📍 Extract ONLY source file names
-            memory_source_files = source_tracker.extract_sources_from_memory(recent_memories)
-            context_source_files = source_tracker.extract_sources_from_context(context)
-            formatted_sources = source_tracker.format_sources_for_response(context_source_files, memory_source_files)
+            logger.info(f"📍 Built filtered context from {len(source_files)} source(s)")
             
+            # Process with filtered context
             result = await ai_orchestrator.process_request(username, user_role, user_input, thread_id)
             
-            # 📍 Add sources (file names only)
+            # 📍 Add ACTUAL source files used
+            formatted_sources = source_tracker.format_sources_for_response(source_files)
             result["sources_used"] = formatted_sources
             
             # Update session with thread info and check if user just registered
@@ -1858,7 +1968,7 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
             session_info["last_thread_id"] = thread_id
             user_sessions[login_dto_str] = session_info
             
-            logger.info(f"📍 Sources retrieved: {formatted_sources['sources_count']} files")
+            logger.info(f"✅ Response sent using sources: {source_files}")
 
         logger.info(f"✅ Response sent to {username} ({user_role})")
         return result
@@ -1902,26 +2012,19 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
         thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
     
     try:
-        # 📍 Retrieve memories and context BEFORE processing
-        recent_memories = await asyncio.to_thread(
-            enhanced_memory.retrieve_contextual_memories,
-            username, user_input, 3, thread_id, True
-        )
-        context = await asyncio.to_thread(
-            build_conversational_context,
-            username, user_input, thread_id, True
+        # 📍 BUILD FILTERED CONTEXT FOR EXISTING THREAD
+        context, source_files = await build_filtered_context(
+            username, user_input, thread_id=thread_id, is_existing_thread=True
         )
         
-        # 📍 Extract ONLY source file names
-        memory_source_files = source_tracker.extract_sources_from_memory(recent_memories)
-        context_source_files = source_tracker.extract_sources_from_context(context)
-        formatted_sources = source_tracker.format_sources_for_response(context_source_files, memory_source_files)
+        logger.info(f"📍 Built filtered context from {len(source_files)} source(s)")
         
         result = await ai_orchestrator.process_request(
             username, user_role, user_input, thread_id, is_existing_thread=True
         )
         
-        # 📍 Add sources (file names only)
+        # 📍 Add ACTUAL source files used
+        formatted_sources = source_tracker.format_sources_for_response(source_files)
         result["sources_used"] = formatted_sources
         
         # Update session with thread info and check if user just registered
@@ -1931,7 +2034,7 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
         session_info["last_thread_id"] = thread_id
         user_sessions[login_dto_str] = session_info
         
-        logger.info(f"📍 Sources retrieved: {formatted_sources['sources_count']} files")
+        logger.info(f"✅ Response sent using sources: {source_files}")
         logger.info(f"✅ Thread response sent to {username} ({user_role})")
         return result
         
