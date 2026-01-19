@@ -94,6 +94,83 @@ class UserRole:
     MANAGER = "manager"
     SALES = "sales"
 
+# ===========================
+# SOURCE TRACKER
+# ===========================
+class SourceTracker:
+    """Track which sources/files were used to generate responses"""
+    
+    @staticmethod
+    def extract_sources_from_memory(memories: List[Dict]) -> List[Dict]:
+        """Extract source information from retrieved memories"""
+        sources = []
+        for memory in memories:
+            source = {
+                "type": "memory",
+                "memory_id": memory.get("memory_id"),
+                "bot_type": memory.get("bot_type"),
+                "timestamp": memory.get("timestamp"),
+                "relevance_score": memory.get("relevance_score", 0)
+            }
+            sources.append(source)
+        return sources
+    
+    @staticmethod
+    def extract_sources_from_context(context: str) -> List[Dict]:
+        """Extract source files mentioned in context"""
+        sources = []
+        
+        # Extract thread information
+        if "Current Conversation Thread:" in context:
+            thread_match = re.search(r'Current Conversation Thread:\s*(.+?)(?:\n|===)', context)
+            if thread_match:
+                sources.append({
+                    "type": "thread",
+                    "name": thread_match.group(1).strip(),
+                    "context_type": "conversation_history"
+                })
+        
+        # Extract past interactions
+        if "Related Past Interactions" in context:
+            sources.append({
+                "type": "past_interactions",
+                "name": "Historical conversation data",
+                "context_type": "memory"
+            })
+        
+        return sources
+    
+    @staticmethod
+    def format_sources_for_response(context_sources: List[Dict], memory_sources: List[Dict]) -> Dict:
+        """Format sources for inclusion in response"""
+        all_sources = context_sources + memory_sources
+        
+        formatted = {
+            "sources_count": len(all_sources),
+            "sources": []
+        }
+        
+        # Group by type
+        by_type = {}
+        for source in all_sources:
+            source_type = source.get("type", "unknown")
+            if source_type not in by_type:
+                by_type[source_type] = []
+            by_type[source_type].append(source)
+        
+        # Format grouped sources
+        for source_type, group in by_type.items():
+            formatted["sources"].append({
+                "type": source_type,
+                "count": len(group),
+                "items": group[:5]
+            })
+        
+        return formatted
+
+# Initialize source tracker
+source_tracker = SourceTracker()
+
 # Mapping ROLEID to internal role names
 ROLEID_TO_NAME = {
     "-1799999969": "admin",          # SystemAdmin / Administrator
@@ -1764,6 +1841,11 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
         # For greetings, respond immediately without creating thread
         if is_greeting(user_input):
             result = await ai_orchestrator.process_request(username, user_role, user_input, None)
+            # Add empty sources for greeting
+            result["sources_used"] = {
+                "sources_count": 0,
+                "sources": []
+            }
             # Create thread in background AFTER response if needed
             if result.get("thread_id") is None:
                 thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
@@ -1775,7 +1857,26 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
         else:
             # Create new thread for new conversation
             thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
+            
+            # 📍 Retrieve memories and context BEFORE processing
+            recent_memories = await asyncio.to_thread(
+                enhanced_memory.retrieve_contextual_memories,
+                username, user_input, 3, thread_id, False
+            )
+            context = await asyncio.to_thread(
+                build_conversational_context,
+                username, user_input, thread_id, False
+            )
+            
+            # 📍 Extract sources
+            memory_sources = source_tracker.extract_sources_from_memory(recent_memories)
+            context_sources = source_tracker.extract_sources_from_context(context)
+            formatted_sources = source_tracker.format_sources_for_response(context_sources, memory_sources)
+            
             result = await ai_orchestrator.process_request(username, user_role, user_input, thread_id)
+            
+            # 📍 Add sources to response
+            result["sources_used"] = formatted_sources
             
             # Update session with thread info and check if user just registered
             if result.get("bot_type") == "role_setup":
@@ -1783,6 +1884,8 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
                 session_info["current_role"] = result.get("user_role", "client")
             session_info["last_thread_id"] = thread_id
             user_sessions[login_dto_str] = session_info
+            
+            logger.info(f"📍 Sources included: {formatted_sources['sources_count']}")
 
         logger.info(f"✅ Response sent to {username} ({user_role})")
         return result
@@ -1794,7 +1897,7 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
         error_response = "I encountered an error processing your request. Please try again or rephrase your question."
         return JSONResponse(
             status_code=500,
-            content={"response": error_response, "bot_type": "error"}
+            content={"response": error_response, "bot_type": "error", "sources_used": {"sources_count": 0, "sources": []}}
         )
 
 @app.post("/gbaiapi/thread_chat", tags=["AI Thread Chat"])
@@ -1826,9 +1929,27 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
         thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
     
     try:
+        # 📍 Retrieve memories and context BEFORE processing
+        recent_memories = await asyncio.to_thread(
+            enhanced_memory.retrieve_contextual_memories,
+            username, user_input, 3, thread_id, True
+        )
+        context = await asyncio.to_thread(
+            build_conversational_context,
+            username, user_input, thread_id, True
+        )
+        
+        # 📍 Extract sources
+        memory_sources = source_tracker.extract_sources_from_memory(recent_memories)
+        context_sources = source_tracker.extract_sources_from_context(context)
+        formatted_sources = source_tracker.format_sources_for_response(context_sources, memory_sources)
+        
         result = await ai_orchestrator.process_request(
             username, user_role, user_input, thread_id, is_existing_thread=True
         )
+        
+        # 📍 Add sources to response
+        result["sources_used"] = formatted_sources
         
         # Update session with thread info and check if user just registered
         if result.get("bot_type") == "role_setup":
@@ -1837,6 +1958,7 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
         session_info["last_thread_id"] = thread_id
         user_sessions[login_dto_str] = session_info
         
+        logger.info(f"📍 Sources included: {formatted_sources['sources_count']}")
         logger.info(f"✅ Thread response sent to {username} ({user_role})")
         return result
         
@@ -1846,7 +1968,7 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
         error_response = "I encountered an error. Please try again."
         return JSONResponse(
             status_code=500,
-            content={"response": error_response, "bot_type": "error", "thread_id": thread_id}
+            content={"response": error_response, "bot_type": "error", "thread_id": thread_id, "sources_used": {"sources_count": 0, "sources": []}}
         )
 
 @app.get("/gbaiapi/conversation_threads", tags=["Conversation History"])
