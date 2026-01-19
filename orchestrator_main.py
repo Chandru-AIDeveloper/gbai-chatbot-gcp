@@ -1537,6 +1537,12 @@ For example: "Name: John, Role: developer" """
             )
             context = build_conversational_context(username, question, thread_id, thread_isolation=False)
 
+        logger.info(f"📚 Retrieved {len(recent_memories)} contextual memories")
+
+        logger.info("🎯 Detecting intent...")
+        intent = await self.detect_intent_with_ai(question, context)
+        logger.info(f"🎯 INTENT SELECTED: {intent}")
+
         # 🔗 ENHANCED: Add cross-bot context sharing
         cross_bot_contexts = shared_context_registry.get_relevant_contexts(username, intent, question)
         if cross_bot_contexts:
@@ -1559,12 +1565,6 @@ For example: "Name: John, Role: developer" """
 
             context = "\n".join(context_parts)
             logger.info(f"🔗 Added {len(cross_bot_contexts)} cross-bot contexts")
-
-        logger.info(f"📚 Retrieved {len(recent_memories)} contextual memories")
-        
-        logger.info("🎯 Detecting intent...")
-        intent = await self.detect_intent_with_ai(question, context)
-        logger.info(f"🎯 INTENT SELECTED: {intent}")
         
         selected_bot = self.bots.get(intent, self.bots["general"])
         answer = None
