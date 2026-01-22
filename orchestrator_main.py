@@ -1872,19 +1872,27 @@ def parse_name_and_role(message: str) -> tuple[str, str]:
                     role = valid_role
                     break
     
-    # Strategy 4: Simple space-separated format (Name Role)
-    if not name or not role:
+    # Strategy 4: Simple space-separated format (Name Role) - Extract name even if role found
+    if not name:  # ✅ FIX: Only check for name, role may already be found
         words = message.split()
         if len(words) >= 2:
-            # Check if last word or any word is a valid role
+            # Check if any word is a valid role to identify name position
             for i, word in enumerate(words):
                 word_lower = word.lower().strip('.,!?;:')
                 if word_lower in valid_roles:
-                    role = word_lower
-                    # Take the word(s) before role as name
-                    if i > 0:
-                        name = words[0]
+                    # Found role at position i, take first word as name
+                    name = words[0]
+                    if not role:  # Only set role if not already found
+                        role = word_lower
                     break
+            else:
+                # No role found in words, try first word as name and second as role
+                if len(words) >= 2:
+                    potential_role = words[1].lower().strip('.,!?;:')
+                    if potential_role in valid_roles:
+                        name = words[0]
+                        if not role:
+                            role = potential_role
     
     # Validate and clean up
     if name:
