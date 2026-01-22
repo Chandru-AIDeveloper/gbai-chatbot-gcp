@@ -26,15 +26,15 @@ from shared_resources import ai_resources
 try:
     import formula_bot
     FORMULA_BOT_AVAILABLE = True
-    logging.info( "Formula bot imported successfully")
+    logging.info("Formula bot imported successfully")
 except ImportError as e:
     FORMULA_BOT_AVAILABLE = False
-    logging.warning( f"Formula bot not available: {e}")
+    logging.warning(f"Formula bot not available: {e}")
 
 try:
     import report_bot
     REPORT_BOT_AVAILABLE = True
-    logging.info( "Report bot imported successfully")
+    logging.info("Report bot imported successfully")
 except ImportError as e:
     REPORT_BOT_AVAILABLE = False
     logging.warning(f"Report bot not available: {e}")
@@ -67,7 +67,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # GCP Configuration
-GCP_PROJECT_ID = os.environ.get( 'GCP_PROJECT_ID')
+GCP_PROJECT_ID = os.environ.get('GCP_PROJECT_ID')
 GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME')
 db = firestore.Client(project=GCP_PROJECT_ID)
 storage_client = storage.Client(project=GCP_PROJECT_ID)
@@ -1811,25 +1811,93 @@ ai_orchestrator = None
 # Helper Functions
 # ===========================
 def parse_name_and_role(message: str) -> tuple[str, str]:
-    """Parse name and role from user message. Expected format: 'Name: John, Role: developer'"""
-    import re
+    """
+    Parse name and role from user message with flexible format support.
+    Supports multiple formats:
+    - "Name: John, Role: developer"
+    - "name: john role: developer"
+    - "john developer"
+    - "Name John Role Developer"
+    - "My name is John and I'm a developer"
+    """
     name = None
     role = None
 
-    # Case insensitive matching
-    name_match = re.search(r'name\s*:\s*([^\s,]+)', message, re.IGNORECASE)
-    role_match = re.search(r'role\s*:\s*([^\s,]+)', message, re.IGNORECASE)
-
-    if name_match:
-        name = name_match.group(1).strip()
-    if role_match:
-        role = role_match.group(1).strip().lower()
-
-    # Validate role
+    message_lower = message.lower().strip()
+    
+    # Valid roles for validation
     valid_roles = ["developer", "implementation", "marketing", "client", "admin", "system admin", "manager", "sales"]
-    if role and role not in valid_roles:
-        role = None  # Invalid role, set to None
 
+    # Strategy 1: Explicit key-value format (name: X, role: Y)
+    name_match = re.search(r'name\s*[:=]\s*([a-zA-Z\s]+?)(?:,|role|$)', message, re.IGNORECASE)
+    role_match = re.search(r'role\s*[:=]\s*([a-zA-Z\s]+?)(?:,|$)', message, re.IGNORECASE)
+    
+    if name_match:
+        name = name_match.group(1).strip().split()[0]  # Take first word
+    if role_match:
+        role_candidate = role_match.group(1).strip().lower()
+        # Handle "system admin" as special case
+        if "system" in role_candidate and "admin" in role_candidate:
+            role = "system admin"
+        else:
+            # Match first valid role word
+            for valid_role in valid_roles:
+                if valid_role in role_candidate:
+                    role = valid_role
+                    break
+    
+    # Strategy 2: Natural language format (My name is X, I'm a Y)
+    if not name or not role:
+        name_patterns = [
+            r"(?:my\s+)?name\s+(?:is\s+)?([a-zA-Z]+)",
+            r"i'm?\s+([a-zA-Z]+)\s+(?:and|,)?",
+        ]
+        for pattern in name_patterns:
+            match = re.search(pattern, message, re.IGNORECASE)
+            if match and not name:
+                candidate = match.group(1).strip()
+                if candidate.lower() not in ["a", "the", "and", "or"] and len(candidate) > 1:
+                    name = candidate
+    
+    # Strategy 3: Find role anywhere in message
+    if not role:
+        message_lower = message.lower()
+        # Check for "system admin" first (2-word role)
+        if "system admin" in message_lower or ("system" in message_lower and "admin" in message_lower):
+            role = "system admin"
+        else:
+            # Check for any other valid role
+            for valid_role in valid_roles:
+                if valid_role in message_lower:
+                    role = valid_role
+                    break
+    
+    # Strategy 4: Simple space-separated format (Name Role)
+    if not name or not role:
+        words = message.split()
+        if len(words) >= 2:
+            # Check if last word or any word is a valid role
+            for i, word in enumerate(words):
+                word_lower = word.lower().strip('.,!?;:')
+                if word_lower in valid_roles:
+                    role = word_lower
+                    # Take the word(s) before role as name
+                    if i > 0:
+                        name = words[0]
+                    break
+    
+    # Validate and clean up
+    if name:
+        name = name.strip().capitalize()
+    
+    if role:
+        role = role.strip().lower()
+        if role not in valid_roles:
+            role = None  # Invalid role
+    
+    logger.info(f"🔍 Parsed message: '{message}'")
+    logger.info(f"   → Name: {name}, Role: {role}")
+    
     return name, role
 
 def update_user_session(username: str, name: str = None, current_role: str = None):
@@ -1908,7 +1976,7 @@ class ThreadRenameRequest(BaseModel):
 # ===========================
 @app.post("/gbaiapi/chat", tags=["AI Role-Based Chat"])
 async def ai_role_based_chat(message: Message, Login: str = Header(...)):
-    """AI-powered role-based chat - NEW CONVERSATION"""
+    """AI-powered role-based chat - NEW CONVERSATION with improved thread handling"""
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
@@ -1927,50 +1995,137 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
         user_role = session_info.get("current_role", "unknown")
         is_registered = session_info.get("registered", False)
         
-        # For greetings, respond immediately without creating thread
-        if is_greeting(user_input):
-            result = await ai_orchestrator.process_request(username, user_role, user_input, None)
-            # Add empty sources for greeting
-            result["sources_used"] = {
-                "sources_count": 0,
-                "sources": []
-            }
-            # Create thread in background AFTER response if needed
-            if result.get("thread_id") is None:
-                thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
-                result["thread_id"] = thread_id
-                # Update session with thread info
-                session_info["last_thread_id"] = thread_id
-                user_sessions[login_dto_str] = session_info
-            return result
-        else:
-            # Create new thread for new conversation
-            thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
+        # ✅ FIX: ALWAYS create thread for first message
+        thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
+        logger.info(f"📍 Created new thread: {thread_id}")
+        
+        thread = history_manager.get_thread(thread_id)
+        
+        # ✅ FIX: Check if current request is role setup or actual question
+        parsed_name, parsed_role = parse_name_and_role(user_input)
+        
+        if parsed_role:
+            # User provided both name and role in this message
+            user_name = parsed_name or username
+            user_role = parsed_role
             
-            # 📍 BUILD FILTERED CONTEXT (NOT raw past history)
-            context, source_files = await build_filtered_context(
-                username, user_input, thread_id=thread_id, is_existing_thread=False
+            # ✅ FIX: Save role info to thread IMMEDIATELY
+            thread.user_role = user_role
+            thread.user_name = user_name
+            history_manager.save_threads()
+            
+            logger.info(f"🎭 User set role to: {user_role}, name: {user_name} in thread {thread_id}")
+            
+            confirmation = f"Perfect! I've set your profile:\n• Name: {user_name}\n• Role: {user_role}\n\nNow, how can I help you with GoodBooks ERP today?"
+            
+            # ✅ FIX: Store this setup message in thread
+            await asyncio.to_thread(
+                history_manager.add_message_to_thread,
+                thread_id, user_input, confirmation, "role_setup"
             )
             
-            logger.info(f"📍 Built filtered context from {len(source_files)} source(s)")
-            
-            # Process with filtered context
-            result = await ai_orchestrator.process_request(username, user_role, user_input, thread_id)
-            
-            # 📍 Add ACTUAL source files used
-            formatted_sources = source_tracker.format_sources_for_response(source_files)
-            result["sources_used"] = formatted_sources
-            
-            # Update session with thread info and check if user just registered
-            if result.get("bot_type") == "role_setup":
-                session_info["registered"] = True
-                session_info["current_role"] = result.get("user_role", "client")
+            # Update session
+            session_info["registered"] = True
+            session_info["current_role"] = user_role
+            session_info["user_name"] = user_name
             session_info["last_thread_id"] = thread_id
             user_sessions[login_dto_str] = session_info
             
-            logger.info(f"✅ Response sent using sources: {source_files}")
+            return {
+                "response": confirmation,
+                "bot_type": "role_setup",
+                "thread_id": thread_id,
+                "user_role": user_role,
+                "user_name": user_name,
+                "sources_used": {
+                    "sources_count": 0,
+                    "sources": []
+                }
+            }
+        
+        # ✅ FIX: Check if user is already registered
+        if not is_registered or user_role == "unknown":
+            # Ask for name and role with helpful examples
+            prompt = """Hello! I'm your GoodBooks ERP assistant. 
 
-        logger.info(f"✅ Response sent to {username} ({user_role})")
+To give you the best help, I need to know your name and role. 
+
+**Please tell me in any of these formats:**
+- "Name: John, Role: Developer"
+- "John, I'm a developer"
+- "My name is John and I'm a marketing manager"
+- "John developer"
+
+**Available roles:** Developer, Implementation, Marketing, Client, Admin, System Admin, Manager, Sales
+
+For example: "My name is Ashok and I'm a developer" """
+            
+            # Store role request in thread
+            await asyncio.to_thread(
+                history_manager.add_message_to_thread,
+                thread_id, user_input, prompt, "role_prompt"
+            )
+            
+            return {
+                "response": prompt,
+                "bot_type": "role_prompt",
+                "thread_id": thread_id,
+                "user_role": "client",
+                "sources_used": {
+                    "sources_count": 0,
+                    "sources": []
+                }
+            }
+        
+        # ✅ FIX: User is registered and has role, process as normal query
+        logger.info(f"✅ User {username} is registered as {user_role}")
+        
+        # Set thread role if not already set
+        if not thread.user_role:
+            thread.user_role = user_role
+            history_manager.save_threads()
+        
+        # Check if it's a greeting
+        if is_greeting(user_input):
+            logger.info(f"⚡ INSTANT greeting response (0.0s)")
+            greeting_response = get_greeting_response(user_role)
+            
+            asyncio.create_task(
+                asyncio.to_thread(
+                    history_manager.add_message_to_thread,
+                    thread_id, user_input, greeting_response, "greeting"
+                )
+            )
+            
+            return {
+                "response": greeting_response,
+                "bot_type": "greeting",
+                "thread_id": thread_id,
+                "user_role": user_role,
+                "sources_used": {
+                    "sources_count": 0,
+                    "sources": []
+                }
+            }
+        
+        # Build filtered context
+        logger.info("📚 Building conversational context...")
+        context, source_files = await build_filtered_context(
+            username, user_input, thread_id=thread_id, is_existing_thread=False
+        )
+        
+        logger.info(f"📍 Built filtered context from {len(source_files)} source(s)")
+        
+        # Process request
+        result = await ai_orchestrator.process_request(username, user_role, user_input, thread_id, is_existing_thread=False)
+        
+        # Add actual source files used
+        formatted_sources = source_tracker.format_sources_for_response(source_files)
+        result["sources_used"] = formatted_sources
+        result["thread_id"] = thread_id
+        
+        logger.info(f"✅ Response sent using sources: {source_files}")
+        logger.info(f"✅ Chat response sent to {username} ({user_role})")
         return result
         
     except Exception as e:
@@ -1985,7 +2140,7 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
 
 @app.post("/gbaiapi/thread_chat", tags=["AI Thread Chat"])
 async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
-    """Continue conversation in existing thread"""
+    """Continue conversation in existing thread with role continuity"""
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
@@ -1998,21 +2153,96 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
     if not user_input:
         return JSONResponse(status_code=400, content={"response": "Please provide a message"})
     
+    if not thread_id:
+        return JSONResponse(status_code=400, content={"response": "Thread ID is required"})
+    
     # Use login_dto as session key for consistency
     login_dto_str = json.dumps(login_dto, sort_keys=True)
     session_info = user_sessions.get(login_dto_str, {})
-    user_role = session_info.get("current_role", "unknown")
     
     # Verify thread exists and belongs to user
-    if thread_id:
-        thread = history_manager.get_thread(thread_id)
-        if not thread or thread.username != username:
-            return JSONResponse(status_code=404, content={"response": "Thread not found or access denied"})
-    else:
-        thread_id = await asyncio.to_thread(history_manager.create_new_thread, username, user_input)
+    thread = history_manager.get_thread(thread_id)
+    if not thread or thread.username != username:
+        return JSONResponse(status_code=404, content={"response": "Thread not found or access denied"})
     
+    # ✅ FIX: Get user_role from thread, not session (thread has authoritative role)
+    user_role = thread.user_role or session_info.get("current_role", "client")
+    
+    # ✅ FIX: Check if still waiting for role setup
+    if not thread.user_role or thread.user_role == "unknown":
+        # Still waiting for role info
+        parsed_name, parsed_role = parse_name_and_role(user_input)
+        
+        if parsed_role:
+            # User provided role now
+            user_name = parsed_name or username
+            user_role = parsed_role
+            
+            # ✅ FIX: Save to thread
+            thread.user_role = user_role
+            thread.user_name = user_name
+            history_manager.save_threads()
+            
+            logger.info(f"🎭 User set role to: {user_role}, name: {user_name} in thread {thread_id}")
+            
+            confirmation = f"Perfect! I've set your profile:\n• Name: {user_name}\n• Role: {user_role}\n\nNow, how can I help you with GoodBooks ERP today?"
+            
+            # Store in thread
+            await asyncio.to_thread(
+                history_manager.add_message_to_thread,
+                thread_id, user_input, confirmation, "role_setup"
+            )
+            
+            # Update session
+            session_info["registered"] = True
+            session_info["current_role"] = user_role
+            session_info["user_name"] = user_name
+            user_sessions[login_dto_str] = session_info
+            
+            return {
+                "response": confirmation,
+                "bot_type": "role_setup",
+                "thread_id": thread_id,
+                "user_role": user_role,
+                "user_name": user_name,
+                "sources_used": {
+                    "sources_count": 0,
+                    "sources": []
+                }
+            }
+        else:
+            # Still can't parse role, ask again with better format hints
+            prompt = """I couldn't understand your role. Could you please provide it in one of these clearer formats?
+
+**Format examples:**
+1. "Name: Ashok, Role: Developer"
+2. "Ashok, developer"
+3. "I'm Ashok and I'm a developer"
+4. "My name is Ashok, role is developer"
+
+**Available roles:** Developer, Implementation, Marketing, Client, Admin, System Admin, Manager, Sales"""
+            
+            await asyncio.to_thread(
+                history_manager.add_message_to_thread,
+                thread_id, user_input, prompt, "role_prompt"
+            )
+            
+            return {
+                "response": prompt,
+                "bot_type": "role_prompt",
+                "thread_id": thread_id,
+                "user_role": "client",
+                "sources_used": {
+                    "sources_count": 0,
+                    "sources": []
+                }
+            }
+    
+    # ✅ FIX: User has role, process normally
     try:
-        # 📍 BUILD FILTERED CONTEXT FOR EXISTING THREAD
+        logger.info(f"📍 Continuing thread {thread_id} with role: {user_role}")
+        
+        # Build filtered context FOR EXISTING THREAD
         context, source_files = await build_filtered_context(
             username, user_input, thread_id=thread_id, is_existing_thread=True
         )
@@ -2023,16 +2253,10 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
             username, user_role, user_input, thread_id, is_existing_thread=True
         )
         
-        # 📍 Add ACTUAL source files used
+        # Add actual source files used
         formatted_sources = source_tracker.format_sources_for_response(source_files)
         result["sources_used"] = formatted_sources
-        
-        # Update session with thread info and check if user just registered
-        if result.get("bot_type") == "role_setup":
-            session_info["registered"] = True
-            session_info["current_role"] = result.get("user_role", "client")
-        session_info["last_thread_id"] = thread_id
-        user_sessions[login_dto_str] = session_info
+        result["thread_id"] = thread_id
         
         logger.info(f"✅ Response sent using sources: {source_files}")
         logger.info(f"✅ Thread response sent to {username} ({user_role})")
