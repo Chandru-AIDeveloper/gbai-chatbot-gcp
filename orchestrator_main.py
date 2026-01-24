@@ -1988,19 +1988,22 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
+        # ✅ FIX: Always get user_role from login_dto, not from session
+        role_id = str(login_dto.get("roleid", ""))
+        user_role = ROLEID_TO_NAME.get(role_id, login_dto.get("Role", "client")).lower()
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header. Must include UserName"})
-    
+
     user_input = message.content.strip()
-    
+
     if not user_input:
         return JSONResponse(status_code=400, content={"response": "Please provide a message"})
-    
+
     try:
         # Use login_dto as session key to maintain session state across requests
         login_dto_str = json.dumps(login_dto, sort_keys=True)
         session_info = user_sessions.get(login_dto_str, {})
-        user_role = session_info.get("current_role", "unknown")
+        # ✅ FIX: Remove role from session check - always use from login_dto
         is_registered = session_info.get("registered", False)
         
         # ✅ FIX: ALWAYS create thread for first message
@@ -2152,29 +2155,29 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
+        # ✅ FIX: Always get user_role from login_dto, not from thread or session
+        role_id = str(login_dto.get("roleid", ""))
+        user_role = ROLEID_TO_NAME.get(role_id, login_dto.get("Role", "client")).lower()
     except Exception:
         return JSONResponse(status_code=400, content={"response": "Invalid login header"})
-    
+
     thread_id = request.thread_id
     user_input = request.message.strip()
-    
+
     if not user_input:
         return JSONResponse(status_code=400, content={"response": "Please provide a message"})
-    
+
     if not thread_id:
         return JSONResponse(status_code=400, content={"response": "Thread ID is required"})
-    
+
     # Use login_dto as session key for consistency
     login_dto_str = json.dumps(login_dto, sort_keys=True)
     session_info = user_sessions.get(login_dto_str, {})
-    
+
     # Verify thread exists and belongs to user
     thread = history_manager.get_thread(thread_id)
     if not thread or thread.username != username:
         return JSONResponse(status_code=404, content={"response": "Thread not found or access denied"})
-    
-    # ✅ FIX: Get user_role from thread, not session (thread has authoritative role)
-    user_role = thread.user_role or session_info.get("current_role", "client")
     
     # ✅ FIX: Check if still waiting for role setup
     if not thread.user_role or thread.user_role == "unknown":
