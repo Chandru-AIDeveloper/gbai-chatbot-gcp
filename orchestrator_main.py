@@ -115,12 +115,12 @@ class SourceTracker:
         return sources if sources else ["Default_Knowledge_Base"]
     
     @staticmethod
-    def is_memory_relevant_to_query(memory: Dict, user_question: str, 
-                                     relevance_threshold: float = 0.7) -> bool:
+    def is_memory_relevant_to_query(memory: Dict, user_question: str,
+                                     relevance_threshold: float = 0.5) -> bool:
         """Check if memory is actually relevant to current question"""
         relevance_score = memory.get("relevance_score", 0)
-        
-        # Only use memories with HIGH relevance
+
+        # Use memories with moderate relevance to provide better context
         if relevance_score < relevance_threshold:
             return False
         
@@ -436,6 +436,7 @@ ORCHESTRATOR_SYSTEM_PROMPT = """You are a routing assistant for GoodBooks ERP. R
 Examples:
 "What is GoodBooks ERP?" -> general
 "Tell me about inventory module" -> general  
+"The user asks about leave"-> general
 "Calculate 100 * 5" -> formula
 "What is 20% of 500?" -> formula
 "Show me sales report" -> report
@@ -731,17 +732,29 @@ class EnhancedConversationalMemory:
                 if (doc.metadata.get("username") == username and
                     doc.metadata.get("memory_id") != "init"):
 
+                    # ENHANCED: Better thread isolation logic for existing threads
                     if thread_isolation and thread_id:
-                        if doc.metadata.get("thread_id") != thread_id:
-                            continue
+                        doc_thread_id = doc.metadata.get("thread_id")
+
+                        # Always allow memories from the same thread
+                        if doc_thread_id == thread_id:
+                            pass  # Allow this memory
+                        else:
+                            # For memories from other threads, only allow recent ones (within 2 hours)
+                            try:
+                                memory_time = datetime.fromisoformat(doc.metadata.get("timestamp", "").replace('Z', '+00:00'))
+                                hours_old = (datetime.now() - memory_time).total_seconds() / 3600
+                                if hours_old > 2:  # Skip old memories from other threads
+                                    continue
+                            except:
+                                continue  # Skip if can't parse timestamp
 
                     memory_id = doc.metadata.get("memory_id")
 
-                    # Deduplication based on content similarity
-                    content_hash = hash(doc.page_content[:300])  # First 300 chars
-                    if content_hash in seen_memories:
+                    # IMPROVED: Better deduplication - use memory_id instead of content hash
+                    if memory_id in seen_memories:
                         continue
-                    seen_memories.add(content_hash)
+                    seen_memories.add(memory_id)
 
                     if memory_id not in user_memories:
                         # Enhanced memory object with relevance scoring
@@ -1308,8 +1321,8 @@ async def build_filtered_context(username: str, user_question: str,
     
     # Step 2: FILTER memories by relevance and question type match
     filtered_memories = [
-        mem for mem in recent_memories 
-        if source_tracker.is_memory_relevant_to_query(mem, user_question, relevance_threshold=0.75)
+        mem for mem in recent_memories
+        if source_tracker.is_memory_relevant_to_query(mem, user_question, relevance_threshold=0.3)
     ]
     
     # Step 3: If no highly relevant memories, don't force old history
@@ -1616,36 +1629,35 @@ Rewritten Answer:"""
         logger.info(f"💬 Question: {question}")
         logger.info("="*80)
 
-        # Check if thread has role set, if not prompt for it
-        thread = None
-        if thread_id:
+        # IMPROVED: Only prompt for role when it's a NEW thread with no role set
+        # Don't check role on every request for existing threads
+        if thread_id and not is_existing_thread:
             thread = history_manager.get_thread(thread_id)
-        
-        current_role = thread.user_role if thread else None
-        user_name_stored = thread.user_name if thread else None
+            current_role = thread.user_role if thread else None
 
-        if not current_role:
-            # Parse if user provided name and role
-            parsed_name, parsed_role = parse_name_and_role(question)
-            if parsed_role:
-                # User provided role, set it in thread
-                user_role = parsed_role
-                user_name = parsed_name
-                if thread:
-                    thread.user_role = user_role
-                    thread.user_name = user_name
-                    history_manager.save_threads()
-                logger.info(f"🎭 User set role to: {user_role}, name: {user_name} for thread {thread_id}")
-                confirmation = f"Hello {user_name if user_name else username}! I've set your role to {user_role}. How can I help you with GoodBooks ERP today?"
-                return {
-                    "response": confirmation,
-                    "bot_type": "role_setup",
-                    "thread_id": thread_id,
-                    "user_role": user_role
-                }
-            else:
-                # Ask for name and role
-                prompt = """Hello! I'm your GoodBooks ERP assistant. To provide you with the best help, please tell me your name and role.
+            # Only prompt for role if this is a truly new thread with no role
+            if not current_role:
+                # Parse if user provided name and role
+                parsed_name, parsed_role = parse_name_and_role(question)
+                if parsed_role:
+                    # User provided role, set it in thread
+                    user_role = parsed_role
+                    user_name = parsed_name
+                    if thread:
+                        thread.user_role = user_role
+                        thread.user_name = user_name
+                        history_manager.save_threads()
+                    logger.info(f"🎭 User set role to: {user_role}, name: {user_name} for thread {thread_id}")
+                    confirmation = f"Hello {user_name if user_name else username}! I've set your role to {user_role}. How can I help you with GoodBooks ERP today?"
+                    return {
+                        "response": confirmation,
+                        "bot_type": "role_setup",
+                        "thread_id": thread_id,
+                        "user_role": user_role
+                    }
+                else:
+                    # Ask for name and role ONLY for new threads
+                    prompt = """Hello! I'm your GoodBooks ERP assistant. To provide you with the best help, please tell me your name and role.
 
 Please reply in this format: "Name: [Your Name], Role: [your role]"
 
@@ -1653,15 +1665,32 @@ Available roles: developer, implementation, marketing, client, admin, system adm
 
 For example: "Name: John, Role: developer" """
 
-                return {
-                    "response": prompt,
-                    "bot_type": "role_prompt",
-                    "thread_id": thread_id,
-                    "user_role": "client"  # Default until set
-                }
+                    return {
+                        "response": prompt,
+                        "bot_type": "role_prompt",
+                        "thread_id": thread_id,
+                        "user_role": "client"  # Default until set
+                    }
 
-        # Use the stored role from thread
-        user_role = current_role
+        # For existing threads, use the stored role or fallback to provided role
+        if thread_id and is_existing_thread:
+            thread = history_manager.get_thread(thread_id)
+            if thread:
+                # ✅ IMPROVED: Better role persistence and retrieval
+                if thread.user_role:
+                    user_role = thread.user_role
+                    logger.info(f"✅ Using persisted role from thread {thread_id}: {user_role}")
+                else:
+                    # Thread exists but no role set - this shouldn't happen for existing threads
+                    logger.warning(f"⚠️ Existing thread {thread_id} has no role set - using login role")
+                    user_role = user_role  # Use the provided role
+                    thread.user_role = user_role  # Set it for future use
+                    history_manager.save_threads()
+            else:
+                # Thread ID provided but thread not found - create new thread
+                logger.warning(f"⚠️ Thread {thread_id} not found, creating new thread")
+                thread_id = history_manager.create_new_thread(username, question)
+                is_existing_thread = False
 
         if is_greeting(question):
             logger.info(f"⚡ INSTANT greeting response (0.0s)")
@@ -1825,6 +1854,15 @@ def parse_name_and_role(message: str) -> tuple[str, str]:
 
     message_lower = message.lower().strip()
     
+    # Quick exit for questions - don't parse roles from actual questions
+    question_words = ["how", "what", "can", "could", "why", "when", "where", "show", "tell", "list", "is", "are", "who", "which", "do", "does", "will", "would", "should"]
+    if any(message_lower.startswith(word) for word in question_words) or "?" in message_lower:
+        return None, None
+    
+    # Don't parse role from long sentences that aren't explicit introductions
+    if len(message.split()) > 10 and not ("name:" in message_lower or "role:" in message_lower):
+        return None, None
+    
     # Valid roles for validation
     valid_roles = ["developer", "implementation", "marketing", "client", "admin", "system admin", "manager", "sales"]
 
@@ -1859,18 +1897,7 @@ def parse_name_and_role(message: str) -> tuple[str, str]:
                 if candidate.lower() not in ["a", "the", "and", "or"] and len(candidate) > 1:
                     name = candidate
     
-    # Strategy 3: Find role anywhere in message
-    if not role:
-        message_lower = message.lower()
-        # Check for "system admin" first (2-word role)
-        if "system admin" in message_lower or ("system" in message_lower and "admin" in message_lower):
-            role = "system admin"
-        else:
-            # Check for any other valid role
-            for valid_role in valid_roles:
-                if valid_role in message_lower:
-                    role = valid_role
-                    break
+    # Strategy 3: Removed - too broad, was causing false positives in normal questions
     
     # Strategy 4: Simple space-separated format (Name Role) - Extract name even if role found
     if not name:  # ✅ FIX: Only check for name, role may already be found
@@ -2061,15 +2088,7 @@ async def ai_role_based_chat(message: Message, Login: str = Header(...)):
 
 To give you the best help, I need to know your name and role. 
 
-**Please tell me in any of these formats:**
-- "Name: John, Role: Developer"
-- "John, I'm a developer"
-- "My name is John and I'm a marketing manager"
-- "John developer"
-
-**Available roles:** Developer, Implementation, Marketing, Client, Admin, System Admin, Manager, Sales
-
-For example: "My name is Ashok and I'm a developer" """
+"""
             
             # Store role request in thread
             await asyncio.to_thread(
@@ -2155,7 +2174,7 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
     try:
         login_dto = json.loads(Login)
         username = login_dto.get("UserName", "anonymous")
-        # ✅ FIX: Always get user_role from login_dto, not from thread or session
+        # Get default role from login_dto
         role_id = str(login_dto.get("roleid", ""))
         user_role = ROLEID_TO_NAME.get(role_id, login_dto.get("Role", "client")).lower()
     except Exception:
@@ -2179,6 +2198,11 @@ async def ai_thread_chat(request: ThreadRequest, Login: str = Header(...)):
     if not thread or thread.username != username:
         return JSONResponse(status_code=404, content={"response": "Thread not found or access denied"})
     
+    # ✅ FIX: Prioritize thread's persisted role if it exists
+    if thread.user_role and thread.user_role != "unknown":
+        user_role = thread.user_role
+        logger.info(f"🎭 Using persisted role from thread: {user_role}")
+
     # ✅ FIX: Check if still waiting for role setup
     if not thread.user_role or thread.user_role == "unknown":
         # Still waiting for role info
@@ -2799,3 +2823,4 @@ if __name__ == "__main__":
     logger.info(f"🚀 Starting FIXED & ENHANCED server on port {port}")
     logger.info("="*80)
     uvicorn.run(app, host="0.0.0.0", port=port)
+

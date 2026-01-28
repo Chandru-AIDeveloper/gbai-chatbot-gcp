@@ -245,9 +245,7 @@ Previous messages in this conversation:
 - Avoid unnecessary repetition
 
 [FAIL-SAFE CONDITION]
-If the Menu context does not contain the required information,
-respond exactly with:
-"I don't know. Please try asking a different Menu-related question."
+If the Menu context does not contain the required information, utilize conversation history and cross-bot context to provide the best possible guidance. If still unable to answer, state what you don't know based on all available information.
 
 [USER QUESTION]
 {question}

@@ -472,62 +472,67 @@ async def chat(message: Message, Login: str = Header(...)):
         relevant_memories = conversational_memory.retrieve_relevant_memories(username, user_input, k=3)
         formatted_memories = format_memories(relevant_memories)
  
-        # ✅ ENHANCED: Multi-query retrieval with relevance scoring
+        # ✅ ENHANCED: Multi-query retrieval with relevance scoring and fallback
+        context_str = ""
         if retriever:
             logger.info(f"🔍 Enhanced search for: {user_input[:100]}")
 
-            # Multi-query approach for better coverage
-            queries = [user_input]
+            try:
+                # Multi-query approach for better coverage
+                queries = [user_input]
 
-            # Generate related queries for better context retrieval
-            if len(user_input.split()) > 3:
-                # Add a simplified version for broader matching
-                simplified_query = " ".join(user_input.split()[:5])  # First 5 words
-                queries.append(simplified_query)
+                # Generate related queries for better context retrieval
+                if len(user_input.split()) > 3:
+                    # Add a simplified version for broader matching
+                    simplified_query = " ".join(user_input.split()[:5])  # First 5 words
+                    queries.append(simplified_query)
 
-                # Add keyword-focused query
-                keywords = [word for word in user_input.lower().split() if len(word) > 3]
-                if keywords:
-                    keyword_query = " ".join(keywords[:3])  # Top 3 keywords
-                    queries.append(keyword_query)
+                    # Add keyword-focused query
+                    keywords = [word for word in user_input.lower().split() if len(word) > 3]
+                    if keywords:
+                        keyword_query = " ".join(keywords[:3])  # Top 3 keywords
+                        queries.append(keyword_query)
 
-            all_docs = []
-            seen_content = set()
+                all_docs = []
+                seen_content = set()
 
-            for query in queries:
-                try:
-                    docs = retriever.invoke(query)
-                    for doc in docs:
-                        # Deduplicate based on content similarity
-                        content_hash = hash(doc.page_content[:200])  # First 200 chars
-                        if content_hash not in seen_content:
-                            all_docs.append(doc)
-                            seen_content.add(content_hash)
-                except Exception as e:
-                    logger.warning(f"Query failed: {query[:50]} - {e}")
+                for query in queries:
+                    try:
+                        docs = retriever.invoke(query)
+                        for doc in docs:
+                            # Deduplicate based on content similarity
+                            content_hash = hash(doc.page_content[:200])  # First 200 chars
+                            if content_hash not in seen_content:
+                                all_docs.append(doc)
+                                seen_content.add(content_hash)
+                    except Exception as e:
+                        logger.warning(f"Query failed: {query[:50]} - {e}")
 
-            # Sort by relevance score (if available) and limit
-            all_docs = all_docs[:15]  # Increased from 10 for better coverage
+                # Sort by relevance score (if available) and limit
+                all_docs = all_docs[:15]  # Increased from 10 for better coverage
 
-            logger.info(f"📚 Retrieved {len(all_docs)} unique documents from {len(queries)} queries")
+                logger.info(f"📚 Retrieved {len(all_docs)} unique documents from {len(queries)} queries")
 
-            if all_docs:
-                # Enhanced context formatting with metadata
-                context_parts = []
-                for i, doc in enumerate(all_docs[:10]):  # Top 10 most relevant
-                    source = doc.metadata.get('source', 'unknown')
-                    context_parts.append(f"--- Document {i+1} (Source: {source}) ---")
-                    context_parts.append(doc.page_content)
-                    context_parts.append("")
+                if all_docs:
+                    # Enhanced context formatting with metadata
+                    context_parts = []
+                    for i, doc in enumerate(all_docs[:10]):  # Top 10 most relevant
+                        source = doc.metadata.get('source', 'unknown')
+                        context_parts.append(f"--- Document {i+1} (Source: {source}) ---")
+                        context_parts.append(doc.page_content)
+                        context_parts.append("")
 
-                context_str = "\n".join(context_parts)
-                logger.info(f"📄 Context built: {len(context_str)} chars from {len(all_docs)} docs")
-            else:
-                logger.warning("⚠️ No documents found in knowledge base")
-                context_str = ""
+                    context_str = "\n".join(context_parts)
+                    logger.info(f"📄 Context built: {len(context_str)} chars from {len(all_docs)} docs")
+                else:
+                    logger.warning("⚠️ No documents found in knowledge base - using fallback")
+                    context_str = "No specific documents found in knowledge base for this query."
+            except Exception as e:
+                logger.error(f"❌ Vector DB retrieval error: {e}")
+                context_str = "Vector database temporarily unavailable - answering based on general knowledge."
         else:
-            logger.warning("⚠️ Retriever not available")
-            context_str = ""
+            logger.warning("⚠️ Retriever not available - vector DB not initialized")
+            context_str = "Knowledge base not available - answering based on general knowledge."
  
         # Get role-specific system prompt
         role_system_prompt = ROLE_SYSTEM_PROMPTS_GENERAL.get(user_role, ROLE_SYSTEM_PROMPTS_GENERAL["client"])
